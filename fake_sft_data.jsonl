@@ -1,0 +1,5 @@
+{"id": 0, "prompt": "Calculate 3 + 5.", "response": "The result is 8.", "is_multi_turn": false}
+{"id": 1, "prompt": "Write a Python function to reverse a string.", "response": "def reverse_string(s): return s[::-1]", "is_multi_turn": false}
+{"id": 2, "prompt": "What is the capital of Japan?", "response": "Tokyo.", "is_multi_turn": false}
+{"id": 3, "prompt": "User: Hi! How are you?", "response": "Assistant: I'm fine, thank you!", "is_multi_turn": true}
+{"id": 4, "prompt": "User: Explain photosynthesis.", "response": "Assistant: Photosynthesis is the process by which plants convert sunlight into energy.", "is_multi_turn": true}
