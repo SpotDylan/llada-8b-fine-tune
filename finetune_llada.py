@@ -181,7 +181,7 @@ def main():
     parser.add_argument("--model_name", type=str, default="GSAI-ML/LLaDA-8B-Base", help="Model name or path")
     parser.add_argument("--data_path", type=str, default="sft_data/processed_data.pt", help="Path to processed data")
     parser.add_argument("--output_dir", type=str, default="sft_output", help="Output directory")
-    parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
+    parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
     parser.add_argument("--learning_rate", type=float, default=2.5e-5, help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=3, help="Number of epochs")
     parser.add_argument("--save_steps", type=int, default=500, help="Save checkpoint every X steps")

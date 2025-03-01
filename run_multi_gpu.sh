@@ -33,6 +33,9 @@ list_gpus() {
     exit 0
 }
 
+# Enable memory optimization to avoid fragmentation
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 # Default values
 GPU_ID=0
 MODEL_NAME="GSAI-ML/LLaDA-8B-Base"

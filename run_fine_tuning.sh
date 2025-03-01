@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Enable memory optimization to avoid fragmentation
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 # Set variables
 MODEL_NAME="GSAI-ML/LLaDA-8B-Base"  # Change to your model name/path
 OUTPUT_DIR="sft_output"
