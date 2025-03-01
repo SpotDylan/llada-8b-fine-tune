@@ -224,6 +224,10 @@ def parse_args():
     parser.add_argument("--save_steps", type=int, default=500,
                         help="Save model checkpoint every X steps")
     
+    # Distributed training arguments
+    parser.add_argument("--num_gpus", type=int, default=4,
+                        help="Number of GPUs to use for distributed training")
+    
     # Other arguments
     parser.add_argument("--no_cuda", action="store_true",
                         help="Avoid using CUDA when available")
@@ -370,14 +374,8 @@ def main():
     """Main function for fine-tuning LLaDA."""
     args = parse_args()
     
-    # Add distributed training arguments
-    parser = argparse.ArgumentParser(description="Distributed training arguments")
-    parser.add_argument("--num_gpus", type=int, default=4,
-                        help="Number of GPUs to use for distributed training")
-    distributed_args, _ = parser.parse_known_args()
-    
     # Launch the distributed training
-    world_size = distributed_args.num_gpus
+    world_size = args.num_gpus
     mp.spawn(
         train_model,
         args=(world_size, args),
