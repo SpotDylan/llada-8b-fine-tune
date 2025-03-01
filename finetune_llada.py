@@ -237,6 +237,8 @@ def convert_to_hf_dataset(dataset):
         "input_ids": [],
         "prompt_lengths": [],
         "total_lengths": [],
+        "text": [],  # Add text column for SetFit compatibility
+        "label": [],  # Add label column for SetFit compatibility
     }
     
     for i in range(len(dataset)):
@@ -244,6 +246,8 @@ def convert_to_hf_dataset(dataset):
         data_dict["input_ids"].append(item["input_ids"])
         data_dict["prompt_lengths"].append(item["prompt_length"])
         data_dict["total_lengths"].append(item["total_length"])
+        data_dict["text"].append(item["input_ids"])  # Use input_ids as text
+        data_dict["label"].append(item["input_ids"])  # Use input_ids as label
     
     return HFDataset.from_dict(data_dict)
 
