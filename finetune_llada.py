@@ -11,7 +11,15 @@ import torch
 import torch.nn.functional as F
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.nn.parallel import DistributedDataParallel as _DDP
+
+# Custom DDP wrapper that preserves model_body attribute
+class DDP(_DDP):
+    def __init__(self, module, *args, **kwargs):
+        super().__init__(module, *args, **kwargs)
+        # Preserve model_body attribute for SetFit compatibility
+        if hasattr(module, 'model_body'):
+            self.model_body = module.model_body
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from torch.optim import AdamW
 from transformers import (
@@ -242,6 +250,8 @@ class LLaDAModel(torch.nn.Module):
             torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
         )
         self.mask_id = mask_id
+        # Add model_body attribute for SetFit compatibility
+        self.model_body = self.model
     
     def forward(self, noisy_input_ids, input_ids, masked_indices, p_mask, prompt_lengths, total_lengths):
         """
