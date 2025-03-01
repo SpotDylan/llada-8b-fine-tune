@@ -381,6 +381,12 @@ def finetune(args):
     # Create callback for forward process
     forward_callback = LLaDAForwardCallback(mask_id=args.mask_id)
     
+    # Create trainer with column mapping
+    column_mapping = {
+        "text": "input_ids",  # Map 'input_ids' to 'text'
+        "label": "input_ids",  # Map 'input_ids' to 'label' (we'll use the same data for both)
+    }
+    
     # Create trainer
     trainer = Trainer(
         model=model,
@@ -389,6 +395,7 @@ def finetune(args):
         eval_dataset=eval_dataset,
         callbacks=[forward_callback],
         metric=llada_metric,  # Use custom metric function
+        column_mapping=column_mapping,  # Specify column mapping
     )
     
     # Train model
@@ -509,6 +516,12 @@ def finetune_distributed(rank, world_size, args):
     # Create callback for forward process
     forward_callback = LLaDAForwardCallback(mask_id=args.mask_id)
     
+    # Create trainer with column mapping
+    column_mapping = {
+        "text": "input_ids",  # Map 'input_ids' to 'text'
+        "label": "input_ids",  # Map 'input_ids' to 'label' (we'll use the same data for both)
+    }
+    
     # Create trainer
     trainer = Trainer(
         model=model,
@@ -517,6 +530,7 @@ def finetune_distributed(rank, world_size, args):
         eval_dataset=eval_dataset,
         callbacks=[forward_callback],
         metric=llada_metric,  # Use custom metric function
+        column_mapping=column_mapping,  # Specify column mapping
     )
     
     # Train model
