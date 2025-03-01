@@ -252,6 +252,24 @@ class LLaDAModel(torch.nn.Module):
         self.mask_id = mask_id
         # Add model_body attribute for SetFit compatibility
         self.model_body = self.model
+
+class LLaDAModelLM(LLaDAModel):
+    """
+    Extended LLaDA model with tokenizer attribute for SetFit compatibility.
+    """
+    
+    def __init__(self, model_name_or_path, tokenizer_path, mask_id=126336, use_bf16=False):
+        """
+        Initialize the model with tokenizer.
+        
+        Args:
+            model_name_or_path: Name or path of the model
+            tokenizer_path: Path to the tokenizer
+            mask_id: ID of the mask token
+            use_bf16: Whether to use bfloat16 precision
+        """
+        super().__init__(model_name_or_path, mask_id, use_bf16)
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
     
     def forward(self, noisy_input_ids, input_ids, masked_indices, p_mask, prompt_lengths, total_lengths):
         """
@@ -437,7 +455,7 @@ def finetune(args):
     # Create model
     if is_main_process:
         print(f"Loading model: {args.model}")
-    model = LLaDAModel(args.model, mask_id=args.mask_id, use_bf16=args.use_bf16)
+    model = LLaDAModelLM(args.model, args.tokenizer, mask_id=args.mask_id, use_bf16=args.use_bf16)
     model.to(device)
     
     # Wrap model with DDP if using distributed training
@@ -574,7 +592,7 @@ def finetune_distributed(rank, world_size, args):
     # Create model
     if rank == 0:
         print(f"Loading model: {args.model}")
-    model = LLaDAModel(args.model, mask_id=args.mask_id, use_bf16=args.use_bf16)
+    model = LLaDAModelLM(args.model, args.tokenizer, mask_id=args.mask_id, use_bf16=args.use_bf16)
     model.to(device)
     
     # Wrap model with DDP
