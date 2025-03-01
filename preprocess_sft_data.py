@@ -66,7 +66,7 @@ def preprocess_conversations(args):
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=True)
     
     # Load conversations
     with open(args.input_file, 'r', encoding='utf-8') as f:

@@ -11,7 +11,7 @@ import torch
 import logging
 import random
 import numpy as np
-from transformers import AutoModelForMaskedLM, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer
 from tqdm import tqdm
 
 # Configure logging
@@ -411,8 +411,8 @@ def main():
     
     # Load tokenizer and model
     logger.info(f"Loading tokenizer and model from {args.model_path}")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    model = AutoModelForMaskedLM.from_pretrained(args.model_path)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+    model = AutoModel.from_pretrained(args.model_path, trust_remote_code=True)
     model.to(device)
     model.eval()
     

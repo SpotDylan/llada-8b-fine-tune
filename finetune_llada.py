@@ -11,7 +11,7 @@ import argparse
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoModelForMaskedLM, AutoTokenizer, get_linear_schedule_with_warmup
+from transformers import AutoModel, AutoTokenizer, get_linear_schedule_with_warmup
 from tqdm import tqdm
 import logging
 import random
@@ -249,8 +249,8 @@ def main():
     
     # Load tokenizer and model
     logger.info(f"Loading tokenizer and model from {args.model_name_or_path}")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
-    model = AutoModelForMaskedLM.from_pretrained(args.model_name_or_path)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=True)
+    model = AutoModel.from_pretrained(args.model_name_or_path, trust_remote_code=True)
     model.to(args.device)
     
     # Load dataset
