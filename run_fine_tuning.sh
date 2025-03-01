@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # Run the entire fine-tuning pipeline for LLaDA 8B
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Set variables
 MODEL_NAME="GSAI-ML/LLaDA-8B-Instruct"
