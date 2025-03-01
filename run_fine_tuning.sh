@@ -13,7 +13,7 @@ INPUT_FILE="sft_data/conversations.json"
 PROCESSED_FILE="sft_data/processed_conversations.pt"
 
 # Logits data for KL divergence
-LOGITS_FILE="sft_data/llama_logits.json"
+LOGITS_FILE="sft_data/llama_logits_example.json"
 PROCESSED_LOGITS_FILE="sft_data/processed_logits.pt"
 
 # Training parameters
