@@ -4,7 +4,7 @@ import time
 import math
 import argparse
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union, Tuple, Callable
 
 import torch
 import torch.nn.functional as F
@@ -18,8 +18,11 @@ from transformers import (
     AutoModel,
     get_linear_schedule_with_warmup,
     set_seed,
+    TrainerCallback,
 )
 from tqdm import tqdm
+from setfit import TrainingArguments, Trainer
+from datasets import Dataset as HFDataset
 
 class SFTDataset(Dataset):
     """Dataset for LLaDA supervised fine-tuning."""
@@ -82,62 +85,106 @@ def forward_process(input_ids, mask_id=126336, eps=1e-3):
     
     return noisy_batch, masked_indices, p_mask
 
-def train_epoch(
-    model,
-    dataloader,
-    optimizer,
-    scheduler,
-    device,
-    mask_id=126336,
-    gradient_accumulation_steps=1,
-    max_grad_norm=1.0,
-):
+class LLaDAForwardCallback(TrainerCallback):
     """
-    Train the model for one epoch.
+    Callback for LLaDA forward process during training.
+    """
     
-    Args:
-        model: The LLaDA model
-        dataloader: DataLoader for the training data
-        optimizer: Optimizer
-        scheduler: Learning rate scheduler
-        device: Device to train on
-        mask_id: ID of the mask token
-        gradient_accumulation_steps: Number of steps to accumulate gradients
-        max_grad_norm: Maximum gradient norm for gradient clipping
+    def __init__(self, mask_id=126336, eps=1e-3):
+        """
+        Initialize the callback.
         
-    Returns:
-        Average loss for the epoch
-    """
-    model.train()
-    total_loss = 0
-    total_samples = 0
+        Args:
+            mask_id: ID of the mask token
+            eps: Minimum masking probability
+        """
+        self.mask_id = mask_id
+        self.eps = eps
     
-    progress_bar = tqdm(dataloader, desc="Training")
-    
-    for step, batch in enumerate(progress_bar):
-        input_ids = batch["input_ids"].to(device)
-        prompt_lengths = batch["prompt_lengths"].to(device)
-        total_lengths = batch["total_lengths"].to(device)
+    def on_step_begin(self, args, state, control, **kwargs):
+        """
+        Apply forward process before each training step.
+        
+        Args:
+            args: Training arguments
+            state: Training state
+            control: Training control
+            kwargs: Additional arguments
+        """
+        model = kwargs.get("model", None)
+        inputs = kwargs.get("inputs", None)
+        
+        if model is None or inputs is None:
+            return
+        
+        input_ids = inputs["input_ids"]
+        prompt_lengths = inputs["prompt_lengths"]
         
         # Apply noise to the input sequence
-        noisy_batch, masked_indices, p_mask = forward_process(input_ids, mask_id)
+        noisy_batch, masked_indices, p_mask = forward_process(input_ids, self.mask_id, self.eps)
         
         # Do not add noise to the prompt
-        token_positions = torch.arange(noisy_batch.shape[1], device=device).expand(noisy_batch.size(0), noisy_batch.size(1))
+        token_positions = torch.arange(noisy_batch.shape[1], device=noisy_batch.device).expand(noisy_batch.size(0), noisy_batch.size(1))
         prompt_mask = (token_positions < prompt_lengths.unsqueeze(1))
         noisy_batch[prompt_mask] = input_ids[prompt_mask]
         
-        # Calculate the answer length (including the padded EOS tokens)
-        prompt_mask = prompt_mask.to(torch.int64)
-        answer_lengths = torch.sum((1 - prompt_mask), dim=-1, keepdim=True)
-        answer_lengths = answer_lengths.repeat(1, noisy_batch.shape[1])
+        # Update inputs
+        inputs["noisy_input_ids"] = noisy_batch
+        inputs["masked_indices"] = masked_indices
+        inputs["p_mask"] = p_mask
+
+class LLaDAModel(torch.nn.Module):
+    """
+    Wrapper for LLaDA model to work with SetFit trainer.
+    """
+    
+    def __init__(self, model_name_or_path, mask_id=126336, use_bf16=False):
+        """
+        Initialize the model.
         
+        Args:
+            model_name_or_path: Name or path of the model
+            mask_id: ID of the mask token
+            use_bf16: Whether to use bfloat16 precision
+        """
+        super().__init__()
+        self.model = AutoModel.from_pretrained(
+            model_name_or_path,
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
+        )
+        self.mask_id = mask_id
+    
+    def forward(self, noisy_input_ids, input_ids, masked_indices, p_mask, prompt_lengths, total_lengths):
+        """
+        Forward pass.
+        
+        Args:
+            noisy_input_ids: Input token IDs with noise applied
+            input_ids: Original input token IDs
+            masked_indices: Indices of masked tokens
+            p_mask: Masking probabilities
+            prompt_lengths: Lengths of prompts
+            total_lengths: Total lengths of sequences
+            
+        Returns:
+            Loss
+        """
         # Forward pass
-        outputs = model(noisy_batch)
+        outputs = self.model(noisy_input_ids)
         logits = outputs.logits
         
+        # Calculate prompt mask
+        token_positions = torch.arange(input_ids.shape[1], device=input_ids.device).expand(input_ids.size(0), input_ids.size(1))
+        prompt_mask = (token_positions < prompt_lengths.unsqueeze(1))
+        prompt_mask = prompt_mask.to(torch.int64)
+        
+        # Calculate answer length (including the padded EOS tokens)
+        answer_lengths = torch.sum((1 - prompt_mask), dim=-1, keepdim=True)
+        answer_lengths = answer_lengths.repeat(1, input_ids.shape[1])
+        
         # Calculate loss only on masked tokens
-        masked_indices = (noisy_batch == mask_id)
+        masked_indices = (noisy_input_ids == self.mask_id)
         
         # Cross entropy loss
         token_loss = F.cross_entropy(
@@ -149,86 +196,170 @@ def train_epoch(
         # Normalize by answer length
         loss = torch.sum(token_loss / answer_lengths[masked_indices]) / input_ids.shape[0]
         
-        # Scale loss for gradient accumulation
-        loss = loss / gradient_accumulation_steps
-        
-        # Backward pass
-        loss.backward()
-        
-        # Update weights if we've accumulated enough gradients
-        if (step + 1) % gradient_accumulation_steps == 0 or step == len(dataloader) - 1:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-            optimizer.step()
-            scheduler.step()
-            optimizer.zero_grad()
-        
-        # Update progress bar
-        total_loss += loss.item() * gradient_accumulation_steps
-        total_samples += 1
-        progress_bar.set_postfix({"loss": total_loss / total_samples})
+        return {"loss": loss}
     
-    return total_loss / total_samples
+    def save_pretrained(self, output_dir):
+        """
+        Save the model.
+        
+        Args:
+            output_dir: Directory to save the model
+        """
+        self.model.save_pretrained(output_dir)
 
-def save_checkpoint(model, optimizer, scheduler, epoch, loss, output_dir, is_main_process=True):
+def convert_to_hf_dataset(dataset):
     """
-    Save a checkpoint of the model.
+    Convert a PyTorch dataset to a Hugging Face dataset.
     
     Args:
-        model: The model to save
-        optimizer: The optimizer
-        scheduler: The learning rate scheduler
-        epoch: Current epoch
-        loss: Current loss
-        output_dir: Directory to save the checkpoint
-        is_main_process: Whether this is the main process (rank 0)
+        dataset: PyTorch dataset
+        
+    Returns:
+        Hugging Face dataset
     """
-    if not is_main_process:
-        return
-        
-    # If using DDP, get the underlying module
-    if isinstance(model, DDP):
-        model_to_save = model.module
-    else:
-        model_to_save = model
-        
-    checkpoint = {
-        "model": model_to_save.state_dict(),
-        "optimizer": optimizer.state_dict(),
-        "scheduler": scheduler.state_dict(),
-        "epoch": epoch,
-        "loss": loss,
+    data_dict = {
+        "input_ids": [],
+        "prompt_lengths": [],
+        "total_lengths": [],
     }
     
-    checkpoint_path = os.path.join(output_dir, f"checkpoint-epoch-{epoch}.pt")
-    torch.save(checkpoint, checkpoint_path)
-    print(f"Saved checkpoint to {checkpoint_path}")
+    for i in range(len(dataset)):
+        item = dataset[i]
+        data_dict["input_ids"].append(item["input_ids"])
+        data_dict["prompt_lengths"].append(item["prompt_length"])
+        data_dict["total_lengths"].append(item["total_length"])
+    
+    return HFDataset.from_dict(data_dict)
 
-def setup(rank, world_size, args):
+def setup_distributed(args):
     """
-    Initialize the distributed environment.
+    Set up distributed training environment.
     
     Args:
-        rank: Process rank
-        world_size: Number of processes
         args: Command-line arguments
+        
+    Returns:
+        Tuple of (local_rank, world_size)
     """
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = args.master_port
+    if not args.distributed:
+        return 0, 1
     
-    # Initialize the process group
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    # Initialize the distributed environment
+    if "WORLD_SIZE" in os.environ and "RANK" in os.environ:
+        # Environment variables set by torch.distributed.launch or torchrun
+        world_size = int(os.environ["WORLD_SIZE"])
+        local_rank = int(os.environ["LOCAL_RANK"])
+    else:
+        # Use all available GPUs or the specified number
+        world_size = min(torch.cuda.device_count(), args.num_gpus) if args.num_gpus > 0 else torch.cuda.device_count()
+        local_rank = 0
+        
+        if world_size > 1:
+            # Set environment variables for distributed training
+            os.environ['MASTER_ADDR'] = 'localhost'
+            os.environ['MASTER_PORT'] = args.master_port
+            
+            # Initialize the process group
+            dist.init_process_group("nccl", rank=local_rank, world_size=world_size)
     
     # Set device for this process
-    torch.cuda.set_device(rank)
+    torch.cuda.set_device(local_rank)
     
     # Set seed for reproducibility
-    set_seed(args.seed + rank)  # Different seed per process
+    set_seed(args.seed + local_rank)  # Different seed per process
+    
+    return local_rank, world_size
 
-def cleanup():
+def finetune(args):
     """
-    Clean up the distributed environment.
+    Fine-tune the LLaDA model using SetFit trainer.
+    
+    Args:
+        args: Command-line arguments
     """
-    dist.destroy_process_group()
+    # Set up distributed training
+    local_rank, world_size = setup_distributed(args)
+    is_main_process = local_rank == 0
+    
+    # Create output directory (only on main process)
+    if is_main_process:
+        os.makedirs(args.output_dir, exist_ok=True)
+        if args.distributed:
+            print(f"Using {world_size} GPUs for distributed training")
+    
+    # Set device
+    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    if is_main_process:
+        print(f"Using device: {device}")
+    
+    # Load tokenizer (same for all processes)
+    if is_main_process:
+        print(f"Loading tokenizer from {args.tokenizer}")
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
+    
+    # Load dataset
+    if is_main_process:
+        print(f"Loading dataset from {args.data}")
+    dataset = SFTDataset(args.data)
+    
+    # Convert to Hugging Face dataset
+    hf_dataset = convert_to_hf_dataset(dataset)
+    
+    # Create model
+    if is_main_process:
+        print(f"Loading model: {args.model}")
+    model = LLaDAModel(args.model, mask_id=args.mask_id, use_bf16=args.use_bf16)
+    model.to(device)
+    
+    # Wrap model with DDP if using distributed training
+    if args.distributed and world_size > 1:
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
+    
+    # Create training arguments
+    training_args = TrainingArguments(
+        output_dir=args.output_dir,
+        batch_size=args.batch_size,
+        num_epochs=args.num_epochs,
+        body_learning_rate=args.learning_rate,
+        warmup_proportion=args.warmup_ratio,
+        l2_weight=args.weight_decay,
+        seed=args.seed,
+        logging_steps=50,
+        save_strategy="steps",
+        save_steps=500,
+        save_total_limit=1,
+        load_best_model_at_end=True,
+        metric_for_best_model="embedding_loss",
+        greater_is_better=False,
+    )
+    
+    # Create callback for forward process
+    forward_callback = LLaDAForwardCallback(mask_id=args.mask_id)
+    
+    # Create trainer
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=hf_dataset,
+        callbacks=[forward_callback],
+    )
+    
+    # Train model
+    if is_main_process:
+        print(f"Starting training for {args.num_epochs} epochs")
+    trainer.train()
+    
+    # Save final model (only on main process)
+    if is_main_process:
+        if isinstance(model, DDP):
+            model.module.save_pretrained(os.path.join(args.output_dir, "final_model"))
+        else:
+            model.save_pretrained(os.path.join(args.output_dir, "final_model"))
+        print("Training completed!")
+    
+    # Clean up distributed environment
+    if args.distributed and world_size > 1:
+        dist.destroy_process_group()
 
 def finetune_distributed(rank, world_size, args):
     """
@@ -240,7 +371,17 @@ def finetune_distributed(rank, world_size, args):
         args: Command-line arguments
     """
     # Initialize the distributed environment
-    setup(rank, world_size, args)
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = args.master_port
+    
+    # Initialize the process group
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    
+    # Set device for this process
+    torch.cuda.set_device(rank)
+    
+    # Set seed for reproducibility
+    set_seed(args.seed + rank)  # Different seed per process
     
     # Create output directory (only on main process)
     if rank == 0:
@@ -255,244 +396,67 @@ def finetune_distributed(rank, world_size, args):
         print(f"Loading tokenizer from {args.tokenizer}")
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
     
-    # Load model
-    if rank == 0:
-        print(f"Loading model: {args.model}")
-    model = AutoModel.from_pretrained(
-        args.model,
-        trust_remote_code=True,
-        torch_dtype=torch.bfloat16 if args.use_bf16 else torch.float32,
-    )
-    model.to(device)
-    
-    # Wrap model with DDP
-    model = DDP(model, device_ids=[rank], output_device=rank, find_unused_parameters=False)
-    
     # Load dataset
     if rank == 0:
         print(f"Loading dataset from {args.data}")
     dataset = SFTDataset(args.data)
     
-    # Create distributed sampler
-    sampler = DistributedSampler(
-        dataset, 
-        num_replicas=world_size, 
-        rank=rank,
-        shuffle=True,
-        seed=args.seed
-    )
+    # Convert to Hugging Face dataset
+    hf_dataset = convert_to_hf_dataset(dataset)
     
-    # Create dataloader with distributed sampler
-    dataloader = DataLoader(
-        dataset,
+    # Create model
+    if rank == 0:
+        print(f"Loading model: {args.model}")
+    model = LLaDAModel(args.model, mask_id=args.mask_id, use_bf16=args.use_bf16)
+    model.to(device)
+    
+    # Wrap model with DDP
+    model = DDP(model, device_ids=[rank], output_device=rank, find_unused_parameters=False)
+    
+    # Create training arguments
+    training_args = TrainingArguments(
+        output_dir=args.output_dir,
         batch_size=args.batch_size,
-        sampler=sampler,  # Use sampler instead of shuffle
-        collate_fn=collate_fn,
-        num_workers=args.num_workers,
-        pin_memory=True,
+        num_epochs=args.num_epochs,
+        body_learning_rate=args.learning_rate,
+        warmup_proportion=args.warmup_ratio,
+        l2_weight=args.weight_decay,
+        seed=args.seed,
+        logging_steps=50,
+        save_strategy="steps",
+        save_steps=500,
+        save_total_limit=1,
+        load_best_model_at_end=True,
+        metric_for_best_model="embedding_loss",
+        greater_is_better=False,
     )
     
-    # Set up optimizer
-    optimizer = AdamW(
-        model.parameters(),
-        lr=args.learning_rate,
-        weight_decay=args.weight_decay,
-        betas=(args.adam_beta1, args.adam_beta2),
+    # Create callback for forward process
+    forward_callback = LLaDAForwardCallback(mask_id=args.mask_id)
+    
+    # Create trainer
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=hf_dataset,
+        callbacks=[forward_callback],
     )
     
-    # Set up learning rate scheduler
-    # Adjust for distributed training
-    total_steps = len(dataloader) * args.num_epochs // args.gradient_accumulation_steps
-    warmup_steps = int(total_steps * args.warmup_ratio)
-    
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=total_steps,
-    )
-    
-    # Training loop
+    # Train model
     if rank == 0:
         print(f"Starting training for {args.num_epochs} epochs")
-    best_loss = float("inf")
-    
-    for epoch in range(args.num_epochs):
-        # Set epoch for sampler
-        sampler.set_epoch(epoch)
-        
-        if rank == 0:
-            print(f"Epoch {epoch + 1}/{args.num_epochs}")
-        
-        # Train for one epoch
-        train_loss = train_epoch(
-            model,
-            dataloader,
-            optimizer,
-            scheduler,
-            device,
-            mask_id=args.mask_id,
-            gradient_accumulation_steps=args.gradient_accumulation_steps,
-            max_grad_norm=args.max_grad_norm,
-        )
-        
-        # Synchronize loss across all processes
-        dist.all_reduce(torch.tensor([train_loss]).to(device), op=dist.ReduceOp.SUM)
-        train_loss /= world_size
-        
-        if rank == 0:
-            print(f"Epoch {epoch + 1} completed. Loss: {train_loss:.4f}")
-        
-        # Save checkpoint (only on main process)
-        save_checkpoint(
-            model,
-            optimizer,
-            scheduler,
-            epoch + 1,
-            train_loss,
-            args.output_dir,
-            is_main_process=(rank == 0),
-        )
-        
-        # Save best model (only on main process)
-        if train_loss < best_loss and rank == 0:
-            best_loss = train_loss
-            if isinstance(model, DDP):
-                model.module.save_pretrained(os.path.join(args.output_dir, "best_model"))
-            else:
-                model.save_pretrained(os.path.join(args.output_dir, "best_model"))
-            print(f"Saved best model with loss: {best_loss:.4f}")
+    trainer.train()
     
     # Save final model (only on main process)
     if rank == 0:
-        if isinstance(model, DDP):
-            model.module.save_pretrained(os.path.join(args.output_dir, "final_model"))
-        else:
-            model.save_pretrained(os.path.join(args.output_dir, "final_model"))
+        model.module.save_pretrained(os.path.join(args.output_dir, "final_model"))
         print("Training completed!")
     
     # Clean up
-    cleanup()
-
-def finetune(args):
-    """
-    Fine-tune the LLaDA model.
-    
-    Args:
-        args: Command-line arguments
-    """
-    if args.distributed:
-        # Use all available GPUs or the specified number
-        world_size = min(torch.cuda.device_count(), args.num_gpus) if args.num_gpus > 0 else torch.cuda.device_count()
-        
-        if world_size > 1:
-            # Launch distributed processes
-            mp.spawn(
-                finetune_distributed,
-                args=(world_size, args),
-                nprocs=world_size,
-                join=True
-            )
-            return
-    
-    # Fall back to single-GPU or CPU training if distributed is disabled or only one GPU is available
-    # Set random seed for reproducibility
-    set_seed(args.seed)
-    
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
-    
-    # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-    
-    # Load tokenizer
-    print(f"Loading tokenizer from {args.tokenizer}")
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
-    
-    # Load model
-    print(f"Loading model: {args.model}")
-    model = AutoModel.from_pretrained(
-        args.model,
-        trust_remote_code=True,
-        torch_dtype=torch.bfloat16 if args.use_bf16 else torch.float32,
-    )
-    model.to(device)
-    
-    # Load dataset
-    print(f"Loading dataset from {args.data}")
-    dataset = SFTDataset(args.data)
-    
-    # Create dataloader
-    dataloader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        collate_fn=collate_fn,
-        num_workers=args.num_workers,
-        pin_memory=False,
-    )
-    
-    # Set up optimizer
-    optimizer = AdamW(
-        model.parameters(),
-        lr=args.learning_rate,
-        weight_decay=args.weight_decay,
-        betas=(args.adam_beta1, args.adam_beta2),
-    )
-    
-    # Set up learning rate scheduler
-    total_steps = len(dataloader) * args.num_epochs // args.gradient_accumulation_steps
-    warmup_steps = int(total_steps * args.warmup_ratio)
-    
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=total_steps,
-    )
-    
-    # Training loop
-    print(f"Starting training for {args.num_epochs} epochs")
-    best_loss = float("inf")
-    
-    for epoch in range(args.num_epochs):
-        print(f"Epoch {epoch + 1}/{args.num_epochs}")
-        
-        # Train for one epoch
-        train_loss = train_epoch(
-            model,
-            dataloader,
-            optimizer,
-            scheduler,
-            device,
-            mask_id=args.mask_id,
-            gradient_accumulation_steps=args.gradient_accumulation_steps,
-            max_grad_norm=args.max_grad_norm,
-        )
-        
-        print(f"Epoch {epoch + 1} completed. Loss: {train_loss:.4f}")
-        
-        # Save checkpoint
-        save_checkpoint(
-            model,
-            optimizer,
-            scheduler,
-            epoch + 1,
-            train_loss,
-            args.output_dir,
-        )
-        
-        # Save best model
-        if train_loss < best_loss:
-            best_loss = train_loss
-            model.save_pretrained(os.path.join(args.output_dir, "best_model"))
-            print(f"Saved best model with loss: {best_loss:.4f}")
-    
-    # Save final model
-    model.save_pretrained(os.path.join(args.output_dir, "final_model"))
-    print("Training completed!")
+    dist.destroy_process_group()
 
 def main():
-    parser = argparse.ArgumentParser(description="Fine-tune LLaDA model")
+    parser = argparse.ArgumentParser(description="Fine-tune LLaDA model using SetFit trainer")
     
     # Data arguments
     parser.add_argument("--data", type=str, default="sft_data/preprocessed/preprocessed_data.pt", help="Path to preprocessed data")
@@ -523,6 +487,22 @@ def main():
     parser.add_argument("--master_port", type=str, default="12355", help="Port for distributed training")
     
     args = parser.parse_args()
+    
+    if args.distributed:
+        # Use all available GPUs or the specified number
+        world_size = min(torch.cuda.device_count(), args.num_gpus) if args.num_gpus > 0 else torch.cuda.device_count()
+        
+        if world_size > 1:
+            # Launch distributed processes
+            mp.spawn(
+                finetune_distributed,
+                args=(world_size, args),
+                nprocs=world_size,
+                join=True
+            )
+            return
+    
+    # Fall back to single-GPU or CPU training if distributed is disabled or only one GPU is available
     finetune(args)
 
 if __name__ == "__main__":

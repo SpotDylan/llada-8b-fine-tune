@@ -58,7 +58,7 @@ echo ""
 # Step 3: Fine-tune the model
 echo "Step 3: Fine-tuning the model..."
 echo "This step may take a long time depending on your hardware."
-echo "Using distributed training across 8 GPUs to avoid memory issues."
+echo "Using SetFit trainer with distributed training across 8 GPUs."
 python finetune_llada.py \
     --data sft_data/preprocessed/preprocessed_data.pt \
     --tokenizer sft_data/preprocessed/tokenizer \

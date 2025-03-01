@@ -50,7 +50,25 @@ The fine-tuning process follows the guidelines from the LLaDA paper:
 
 - PyTorch
 - Transformers (version 4.38.2 or later)
+- SetFit (version 1.0.0 or later)
+- Sentence-Transformers (version 2.2.2 or later)
 - CUDA-capable GPU (recommended)
+
+## Implementation Details
+
+The fine-tuning process has been implemented using the Hugging Face SetFit trainer, which provides:
+
+1. **Simplified Training Loop**:
+   - Streamlined training process with built-in support for callbacks
+   - Automatic handling of training phases and optimization
+
+2. **Distributed Training**:
+   - Multi-GPU support for faster training
+   - Efficient data parallelism
+
+3. **Forward Process Integration**:
+   - Custom callback for LLaDA's forward process
+   - Maintains the same noise application strategy as the original implementation
 
 ## Reference
 
