@@ -80,22 +80,9 @@ def train(args):
         print("CUDA is not available. Using CPU")
         device = torch.device("cpu")
     
-    # Set cuda empty cache to help with memory management
-    torch.cuda.empty_cache()
-    
-    # Enable mixed precision training
-    scaler = torch.cuda.amp.GradScaler() if args.mixed_precision else None
-    
     # Load model and tokenizer
     print(f"Loading model: {args.model_name}")
-    model = AutoModel.from_pretrained(args.model_name, 
-                                      trust_remote_code=True,
-                                      torch_dtype=torch.float16 if args.mixed_precision else torch.float32)
-    
-    # Enable gradient checkpointing to save memory
-    if args.gradient_checkpointing:
-        model.gradient_checkpointing_enable()
-    
+    model = AutoModel.from_pretrained(args.model_name, trust_remote_code=True)
     model.to(device)
     
     # Load dataset
@@ -123,7 +110,6 @@ def train(args):
     # Training loop
     model.train()
     global_step = 0
-    accumulated_loss = 0
     
     for epoch in range(args.num_epochs):
         print(f"Epoch {epoch+1}/{args.num_epochs}")
@@ -131,7 +117,7 @@ def train(args):
         epoch_loss = 0
         progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}")
         
-        for step, batch in enumerate(progress_bar):
+        for batch in progress_bar:
             input_ids, prompt_lengths = batch["input_ids"].to(device), batch["prompt_lengths"].to(device)
             
             # Apply forward process to get noisy batch
@@ -149,59 +135,27 @@ def train(args):
             
             masked_indices = (noisy_batch == 126336)
             
-            # Forward pass with mixed precision if enabled
-            if args.mixed_precision:
-                with torch.cuda.amp.autocast():
-                    logits = model(input_ids=noisy_batch).logits
-                    token_loss = F.cross_entropy(logits[masked_indices], input_ids[masked_indices], reduction='none') / p_mask[masked_indices]
-                    ce_loss = torch.sum(token_loss / answer_lengths[masked_indices]) / input_ids.shape[0]
-                    # Divide loss by gradient accumulation steps
-                    ce_loss = ce_loss / args.gradient_accumulation_steps
-                
-                # Backward pass with mixed precision
-                scaler.scale(ce_loss).backward()
-                
-                # Gradient accumulation
-                if (step + 1) % args.gradient_accumulation_steps == 0 or step == len(dataloader) - 1:
-                    scaler.step(optimizer)
-                    scaler.update()
-                    optimizer.zero_grad()
-                    scheduler.step()
-                    accumulated_loss = 0
-                else:
-                    accumulated_loss += ce_loss.item()
-            else:
-                # Standard forward pass
-                logits = model(input_ids=noisy_batch).logits
-                token_loss = F.cross_entropy(logits[masked_indices], input_ids[masked_indices], reduction='none') / p_mask[masked_indices]
-                ce_loss = torch.sum(token_loss / answer_lengths[masked_indices]) / input_ids.shape[0]
-                # Divide loss by gradient accumulation steps
-                ce_loss = ce_loss / args.gradient_accumulation_steps
-                
-                # Backward pass
-                ce_loss.backward()
-                
-                # Gradient accumulation
-                if (step + 1) % args.gradient_accumulation_steps == 0 or step == len(dataloader) - 1:
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    scheduler.step()
-                    accumulated_loss = 0
-                else:
-                    accumulated_loss += ce_loss.item()
+            # Forward pass
+            logits = model(input_ids=noisy_batch).logits
+            
+            # Calculate loss
+            token_loss = F.cross_entropy(logits[masked_indices], input_ids[masked_indices], reduction='none') / p_mask[masked_indices]
+            ce_loss = torch.sum(token_loss / answer_lengths[masked_indices]) / input_ids.shape[0]
+            
+            # Backward pass
+            optimizer.zero_grad()
+            ce_loss.backward()
+            optimizer.step()
+            scheduler.step()
             
             # Update progress
-            epoch_loss += ce_loss.item() * args.gradient_accumulation_steps
+            epoch_loss += ce_loss.item()
             global_step += 1
             
-            progress_bar.set_postfix({"loss": ce_loss.item() * args.gradient_accumulation_steps})
-            
-            # Free up memory
-            del noisy_batch, token_loss, logits, ce_loss
-            torch.cuda.empty_cache()
+            progress_bar.set_postfix({"loss": ce_loss.item()})
             
             # Save checkpoint
-            if global_step % args.save_steps == 0 and (step + 1) % args.gradient_accumulation_steps == 0:
+            if global_step % args.save_steps == 0:
                 checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                 os.makedirs(checkpoint_dir, exist_ok=True)
                 model.save_pretrained(checkpoint_dir)
@@ -227,14 +181,11 @@ def main():
     parser.add_argument("--model_name", type=str, default="GSAI-ML/LLaDA-8B-Base", help="Model name or path")
     parser.add_argument("--data_path", type=str, default="sft_data/processed_data.pt", help="Path to processed data")
     parser.add_argument("--output_dir", type=str, default="sft_output", help="Output directory")
-    parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
+    parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
     parser.add_argument("--learning_rate", type=float, default=2.5e-5, help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=3, help="Number of epochs")
     parser.add_argument("--save_steps", type=int, default=500, help="Save checkpoint every X steps")
     parser.add_argument("--gpu_id", type=int, default=0, help="GPU ID to use (default: 0)")
-    parser.add_argument("--mixed_precision", action="store_true", help="Use mixed precision training")
-    parser.add_argument("--gradient_checkpointing", action="store_true", help="Enable gradient checkpointing")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=8, help="Number of steps to accumulate gradients")
     
     args = parser.parse_args()
     
