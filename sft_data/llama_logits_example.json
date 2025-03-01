@@ -1,0 +1,52 @@
+[
+  {
+    "prompt": "<BOS><start_id>user<end_id>\nWhat is the capital of France?<eot_id><start_id>assistant<end_id>\n",
+    "response": "Paris.<EOS>",
+    "logits": [
+      [0.1, 0.2, 0.3, 0.4, 0.5],
+      [0.2, 0.3, 0.4, 0.5, 0.6],
+      [0.3, 0.4, 0.5, 0.6, 0.7],
+      [0.4, 0.5, 0.6, 0.7, 0.8],
+      [0.5, 0.6, 0.7, 0.8, 0.9],
+      [0.6, 0.7, 0.8, 0.9, 1.0]
+    ],
+    "token": [
+      ["P", "a", "r", "i", "s"],
+      ["a", "r", "i", "s", "."],
+      ["r", "i", "s", ".", "<EOS>"],
+      ["i", "s", ".", "<EOS>", "<PAD>"],
+      ["s", ".", "<EOS>", "<PAD>", "<PAD>"],
+      [".", "<EOS>", "<PAD>", "<PAD>", "<PAD>"]
+    ],
+    "tokenID": [
+      [1000, 1001, 1002, 1003, 1004],
+      [1001, 1002, 1003, 1004, 1005],
+      [1002, 1003, 1004, 1005, 1006],
+      [1003, 1004, 1005, 1006, 0],
+      [1004, 1005, 1006, 0, 0],
+      [1005, 1006, 0, 0, 0]
+    ]
+  },
+  {
+    "prompt": "<BOS><start_id>user<end_id>\nExplain quantum computing in simple terms.<eot_id><start_id>assistant<end_id>\n",
+    "response": "Quantum computing uses qubits.<EOS>",
+    "logits": [
+      [0.1, 0.2, 0.3, 0.4, 0.5],
+      [0.2, 0.3, 0.4, 0.5, 0.6],
+      [0.3, 0.4, 0.5, 0.6, 0.7],
+      [0.4, 0.5, 0.6, 0.7, 0.8]
+    ],
+    "token": [
+      ["Quantum", "computing", "uses", "qubits", "."],
+      ["computing", "uses", "qubits", ".", "<EOS>"],
+      ["uses", "qubits", ".", "<EOS>", "<PAD>"],
+      ["qubits", ".", "<EOS>", "<PAD>", "<PAD>"]
+    ],
+    "tokenID": [
+      [2000, 2001, 2002, 2003, 2004],
+      [2001, 2002, 2003, 2004, 2005],
+      [2002, 2003, 2004, 2005, 0],
+      [2003, 2004, 2005, 0, 0]
+    ]
+  }
+]
