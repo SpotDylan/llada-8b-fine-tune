@@ -1,185 +1,440 @@
-import torch
-import argparse
-from transformers import AutoModel, AutoTokenizer
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
-def generate(model, prompt, steps=128, gen_length=128, block_length=32, temperature=0., 
-             cfg_scale=0., remasking='low_confidence', mask_id=126336):
+"""
+Example script for inference with a fine-tuned LLaDA model.
+This script demonstrates how to use the fine-tuned model for generating responses.
+"""
+
+import argparse
+import torch
+import logging
+import random
+import numpy as np
+from transformers import AutoModelForMaskedLM, AutoTokenizer
+from tqdm import tqdm
+
+# Configure logging
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%m/%d/%Y %H:%M:%S",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
+# Constants
+MASK_TOKEN_ID = 126336  # As specified in the guidelines
+BOS_TOKEN = "<BOS>"
+EOS_TOKEN = "<EOS>"
+START_ID_TOKEN = "<start_id>"
+END_ID_TOKEN = "<end_id>"
+EOT_ID_TOKEN = "<eot_id>"
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Inference with fine-tuned LLaDA model")
+    
+    # Model arguments
+    parser.add_argument("--model_path", type=str, default="models/llada-sft",
+                        help="Path to the fine-tuned model")
+    
+    # Generation arguments
+    parser.add_argument("--max_length", type=int, default=512,
+                        help="Maximum length of generated text")
+    parser.add_argument("--num_beams", type=int, default=1,
+                        help="Number of beams for beam search")
+    parser.add_argument("--temperature", type=float, default=0.7,
+                        help="Temperature for sampling")
+    parser.add_argument("--top_p", type=float, default=0.9,
+                        help="Top-p sampling parameter")
+    parser.add_argument("--top_k", type=int, default=50,
+                        help="Top-k sampling parameter")
+    parser.add_argument("--num_return_sequences", type=int, default=1,
+                        help="Number of sequences to return")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducibility")
+    parser.add_argument("--remask_strategy", type=str, default="low_confidence",
+                        choices=["random", "low_confidence"],
+                        help="Strategy for remasking tokens during generation")
+    parser.add_argument("--remask_ratio", type=float, default=0.5,
+                        help="Ratio of tokens to remask in each iteration")
+    parser.add_argument("--sampling_method", type=str, default="semi_autoregressive_padding",
+                        choices=["fixed_length", "semi_autoregressive_origin", "semi_autoregressive_padding"],
+                        help="Sampling method to use")
+    parser.add_argument("--block_size", type=int, default=64,
+                        help="Block size for semi-autoregressive sampling")
+    
+    # Other arguments
+    parser.add_argument("--no_cuda", action="store_true",
+                        help="Avoid using CUDA when available")
+    parser.add_argument("--interactive", action="store_true",
+                        help="Run in interactive mode")
+    parser.add_argument("--prompt", type=str, default=None,
+                        help="Prompt for non-interactive mode")
+    
+    return parser.parse_args()
+
+def set_seed(seed):
+    """Set random seed for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+def format_prompt(prompt, tokenizer):
     """
-    Generate text using the fine-tuned LLaDA model.
+    Format a prompt for LLaDA.
+    
+    Format: <BOS><start_id>user<end_id>\nPrompt<eot_id><start_id>assistant<end_id>\n
+    """
+    formatted_text = f"{BOS_TOKEN}{START_ID_TOKEN}user{END_ID_TOKEN}\n{prompt}{EOT_ID_TOKEN}{START_ID_TOKEN}assistant{END_ID_TOKEN}\n"
+    return formatted_text
+
+def generate_response(model, tokenizer, prompt, args, device):
+    """
+    Generate a response using the LLaDA model.
     
     Args:
-        model: The fine-tuned LLaDA model
-        prompt: Tokenized prompt
-        steps: Number of sampling steps
-        gen_length: Length of generated text
-        block_length: Block length for semi-autoregressive sampling
-        temperature: Temperature for sampling
-        cfg_scale: Classifier-free guidance scale
-        remasking: Remasking strategy ('low_confidence' or 'random')
-        mask_id: ID of the mask token
-    
+        model: The LLaDA model.
+        tokenizer: Tokenizer for the model.
+        prompt: User prompt.
+        args: Generation arguments.
+        device: Device to use for generation.
+        
     Returns:
-        Generated text
+        Generated response.
     """
-    device = model.device
+    # Format the prompt
+    formatted_prompt = format_prompt(prompt, tokenizer)
     
-    # Initialize with mask tokens
-    x = torch.full((1, prompt.shape[1] + gen_length), mask_id, dtype=torch.long).to(device)
-    x[:, :prompt.shape[1]] = prompt.clone()
+    # Tokenize the prompt
+    prompt_tokens = tokenizer(formatted_prompt, return_tensors="pt").to(device)
+    prompt_length = prompt_tokens.input_ids.shape[1]
     
-    prompt_index = (x != mask_id)
-    
-    # Ensure gen_length is divisible by block_length
-    assert gen_length % block_length == 0
-    num_blocks = gen_length // block_length
-    
-    # Adjust steps to be divisible by num_blocks
-    assert steps % num_blocks == 0
-    steps_per_block = steps // num_blocks
-    
-    for num_block in range(num_blocks):
-        # Get mask indices for current block
-        block_start = prompt.shape[1] + num_block * block_length
-        block_end = prompt.shape[1] + (num_block + 1) * block_length
-        block_mask_index = (x[:, block_start:block_end] == mask_id)
+    # Initialize the sequence with the prompt
+    if args.sampling_method == "fixed_length":
+        # Fixed-length sampling
+        sequence = torch.full(
+            (1, args.max_length), 
+            tokenizer.pad_token_id, 
+            dtype=torch.long, 
+            device=device
+        )
+        sequence[:, :prompt_length] = prompt_tokens.input_ids
         
-        # Calculate number of tokens to transfer at each step
-        mask_num = block_mask_index.sum(dim=1, keepdim=True)
-        base = mask_num // steps_per_block
-        remainder = mask_num % steps_per_block
+        # Initialize mask for tokens to predict
+        mask = torch.zeros_like(sequence, dtype=torch.bool)
+        mask[:, prompt_length:] = True
         
-        num_transfer_tokens = torch.zeros(mask_num.size(0), steps_per_block, device=device, dtype=torch.int64) + base
-        for i in range(mask_num.size(0)):
-            num_transfer_tokens[i, :remainder[i]] += 1
-        
-        for i in range(steps_per_block):
-            # Get current mask indices
-            mask_index = (x == mask_id)
-            
-            # Apply classifier-free guidance if needed
-            if cfg_scale > 0.:
-                un_x = x.clone()
-                un_x[prompt_index] = mask_id
-                x_ = torch.cat([x, un_x], dim=0)
-                logits = model(x_).logits
-                logits, un_logits = torch.chunk(logits, 2, dim=0)
-                logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
-            else:
-                logits = model(x).logits
-            
-            # Sample from logits
-            if temperature > 0:
-                probs = torch.nn.functional.softmax(logits / temperature, dim=-1)
-                x0 = torch.multinomial(probs.view(-1, probs.size(-1)), 1).view(probs.size(0), -1)
-            else:
-                x0 = torch.argmax(logits, dim=-1)
-            
-            # Apply remasking strategy
-            if remasking == 'low_confidence':
-                # Get confidence scores
-                p = torch.nn.functional.softmax(logits, dim=-1)
-                x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1)
-            elif remasking == 'random':
-                x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=device)
-            else:
-                raise ValueError(f"Unknown remasking strategy: {remasking}")
-            
-            # Don't consider tokens outside current block
-            x0_p[:, :block_start] = -float('inf')
-            x0_p[:, block_end:] = -float('inf')
-            
-            # Replace masked tokens with predictions
-            x0 = torch.where(mask_index, x0, x)
-            confidence = torch.where(mask_index, x0_p, -float('inf'))
-            
-            # Select tokens to transfer based on confidence
-            transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=device)
-            for j in range(confidence.shape[0]):
-                _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, i])
-                transfer_index[j, select_index] = True
-            
-            # Update x with selected tokens
-            x[transfer_index] = x0[transfer_index]
+        # Generate tokens iteratively
+        with torch.no_grad():
+            for _ in tqdm(range(10), desc="Generating"):  # Fixed number of iterations
+                # Forward pass for masked positions
+                masked_sequence = sequence.clone()
+                masked_sequence[mask] = MASK_TOKEN_ID
+                
+                outputs = model(input_ids=masked_sequence)
+                logits = outputs.logits
+                
+                # Sample from the distribution for masked tokens
+                probs = torch.softmax(logits[mask] / args.temperature, dim=-1)
+                
+                if args.top_p > 0:
+                    # Top-p sampling
+                    sorted_probs, sorted_indices = torch.sort(probs, dim=-1, descending=True)
+                    cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+                    
+                    # Remove tokens with cumulative probability above the threshold
+                    sorted_indices_to_remove = cumulative_probs > args.top_p
+                    # Keep the first token above the threshold
+                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                    sorted_indices_to_remove[..., 0] = 0
+                    
+                    # Create a mask for indices to keep
+                    indices_to_keep = torch.zeros_like(probs, dtype=torch.bool)
+                    for i in range(probs.shape[0]):
+                        indices = sorted_indices[i][~sorted_indices_to_remove[i]]
+                        indices_to_keep[i, indices] = True
+                    
+                    # Zero out removed indices
+                    probs[~indices_to_keep] = 0
+                    
+                    # Renormalize
+                    probs = probs / probs.sum(dim=-1, keepdim=True)
+                
+                # Sample from the filtered distribution
+                next_tokens = torch.multinomial(probs, 1).squeeze(-1)
+                
+                # Update sequence
+                sequence[mask] = next_tokens
+                
+                # Remask tokens based on strategy
+                if args.remask_strategy == "random":
+                    # Randomly remask tokens
+                    num_to_remask = int(mask.sum().item() * args.remask_ratio)
+                    remask_indices = torch.randperm(mask.sum().item())[:num_to_remask]
+                    
+                    # Create a new mask
+                    new_mask = torch.zeros_like(mask)
+                    masked_positions = torch.nonzero(mask, as_tuple=True)
+                    for idx in remask_indices:
+                        new_mask[masked_positions[0][idx], masked_positions[1][idx]] = True
+                    
+                    mask = new_mask
+                else:  # low_confidence
+                    # Remask tokens with lowest confidence
+                    token_probs = torch.gather(probs, 1, next_tokens.unsqueeze(-1)).squeeze(-1)
+                    num_to_remask = int(mask.sum().item() * args.remask_ratio)
+                    
+                    # Sort by confidence (probability)
+                    _, sorted_indices = torch.sort(token_probs)
+                    remask_indices = sorted_indices[:num_to_remask]
+                    
+                    # Create a new mask
+                    new_mask = torch.zeros_like(mask)
+                    masked_positions = torch.nonzero(mask, as_tuple=True)
+                    for idx in remask_indices:
+                        new_mask[masked_positions[0][idx], masked_positions[1][idx]] = True
+                    
+                    mask = new_mask
+                
+                # Check if we've reached the EOS token
+                if tokenizer.eos_token_id in sequence[0, prompt_length:]:
+                    break
     
-    return x
+    elif args.sampling_method == "semi_autoregressive_origin":
+        # Semi-autoregressive sampling (origin method)
+        max_new_tokens = args.max_length - prompt_length
+        
+        # Start with just the prompt
+        sequence = prompt_tokens.input_ids
+        
+        # Generate tokens block by block
+        for block_start in tqdm(range(0, max_new_tokens, args.block_size), desc="Generating blocks"):
+            block_size = min(args.block_size, max_new_tokens - block_start)
+            
+            # Extend sequence with mask tokens
+            block_masks = torch.full((1, block_size), MASK_TOKEN_ID, dtype=torch.long, device=device)
+            extended_sequence = torch.cat([sequence, block_masks], dim=1)
+            
+            # Initialize mask for the new block
+            mask = torch.zeros_like(extended_sequence, dtype=torch.bool)
+            mask[:, -block_size:] = True
+            
+            # Generate tokens for this block
+            for _ in range(10):  # Fixed number of iterations per block
+                # Forward pass
+                outputs = model(input_ids=extended_sequence)
+                logits = outputs.logits
+                
+                # Sample from the distribution for masked tokens
+                probs = torch.softmax(logits[mask] / args.temperature, dim=-1)
+                
+                if args.top_p > 0:
+                    # Apply top-p sampling
+                    sorted_probs, sorted_indices = torch.sort(probs, dim=-1, descending=True)
+                    cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+                    
+                    sorted_indices_to_remove = cumulative_probs > args.top_p
+                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                    sorted_indices_to_remove[..., 0] = 0
+                    
+                    indices_to_keep = torch.zeros_like(probs, dtype=torch.bool)
+                    for i in range(probs.shape[0]):
+                        indices = sorted_indices[i][~sorted_indices_to_remove[i]]
+                        indices_to_keep[i, indices] = True
+                    
+                    probs[~indices_to_keep] = 0
+                    probs = probs / probs.sum(dim=-1, keepdim=True)
+                
+                # Sample from the filtered distribution
+                next_tokens = torch.multinomial(probs, 1).squeeze(-1)
+                
+                # Update sequence
+                extended_sequence[mask] = next_tokens
+                
+                # Remask tokens based on strategy
+                if args.remask_strategy == "random":
+                    # Randomly remask tokens
+                    num_to_remask = int(mask.sum().item() * args.remask_ratio)
+                    remask_indices = torch.randperm(mask.sum().item())[:num_to_remask]
+                    
+                    new_mask = torch.zeros_like(mask)
+                    masked_positions = torch.nonzero(mask, as_tuple=True)
+                    for idx in remask_indices:
+                        new_mask[masked_positions[0][idx], masked_positions[1][idx]] = True
+                    
+                    mask = new_mask
+                else:  # low_confidence
+                    # Remask tokens with lowest confidence
+                    token_probs = torch.gather(probs, 1, next_tokens.unsqueeze(-1)).squeeze(-1)
+                    num_to_remask = int(mask.sum().item() * args.remask_ratio)
+                    
+                    _, sorted_indices = torch.sort(token_probs)
+                    remask_indices = sorted_indices[:num_to_remask]
+                    
+                    new_mask = torch.zeros_like(mask)
+                    masked_positions = torch.nonzero(mask, as_tuple=True)
+                    for idx in remask_indices:
+                        new_mask[masked_positions[0][idx], masked_positions[1][idx]] = True
+                    
+                    mask = new_mask
+                
+                # Check if all tokens in the block are EOS
+                if (extended_sequence[0, -block_size:] == tokenizer.eos_token_id).all():
+                    break
+            
+            # Update sequence for next block
+            sequence = extended_sequence
+            
+            # Check if we've reached the EOS token
+            if tokenizer.eos_token_id in sequence[0, prompt_length:]:
+                break
+    
+    else:  # semi_autoregressive_padding
+        # Semi-autoregressive sampling with padding
+        max_new_tokens = args.max_length - prompt_length
+        
+        # Initialize sequence with prompt and padding
+        sequence = torch.full(
+            (1, prompt_length + max_new_tokens), 
+            tokenizer.pad_token_id, 
+            dtype=torch.long, 
+            device=device
+        )
+        sequence[:, :prompt_length] = prompt_tokens.input_ids
+        
+        # Add EOS tokens as padding
+        sequence[:, prompt_length:] = tokenizer.eos_token_id
+        
+        # Generate tokens block by block
+        for block_start in tqdm(range(0, max_new_tokens, args.block_size), desc="Generating blocks"):
+            block_size = min(args.block_size, max_new_tokens - block_start)
+            block_end = prompt_length + block_start + block_size
+            
+            # Initialize mask for the current block
+            mask = torch.zeros_like(sequence, dtype=torch.bool)
+            mask[:, prompt_length + block_start:block_end] = True
+            
+            # Replace block with mask tokens
+            masked_sequence = sequence.clone()
+            masked_sequence[mask] = MASK_TOKEN_ID
+            
+            # Generate tokens for this block
+            for _ in range(10):  # Fixed number of iterations per block
+                # Forward pass
+                outputs = model(input_ids=masked_sequence)
+                logits = outputs.logits
+                
+                # Sample from the distribution for masked tokens
+                probs = torch.softmax(logits[mask] / args.temperature, dim=-1)
+                
+                if args.top_p > 0:
+                    # Apply top-p sampling
+                    sorted_probs, sorted_indices = torch.sort(probs, dim=-1, descending=True)
+                    cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+                    
+                    sorted_indices_to_remove = cumulative_probs > args.top_p
+                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                    sorted_indices_to_remove[..., 0] = 0
+                    
+                    indices_to_keep = torch.zeros_like(probs, dtype=torch.bool)
+                    for i in range(probs.shape[0]):
+                        indices = sorted_indices[i][~sorted_indices_to_remove[i]]
+                        indices_to_keep[i, indices] = True
+                    
+                    probs[~indices_to_keep] = 0
+                    probs = probs / probs.sum(dim=-1, keepdim=True)
+                
+                # Sample from the filtered distribution
+                next_tokens = torch.multinomial(probs, 1).squeeze(-1)
+                
+                # Update sequence
+                masked_sequence[mask] = next_tokens
+                
+                # Remask tokens based on strategy
+                if args.remask_strategy == "random":
+                    # Randomly remask tokens
+                    num_to_remask = int(mask.sum().item() * args.remask_ratio)
+                    remask_indices = torch.randperm(mask.sum().item())[:num_to_remask]
+                    
+                    new_mask = torch.zeros_like(mask)
+                    masked_positions = torch.nonzero(mask, as_tuple=True)
+                    for idx in remask_indices:
+                        new_mask[masked_positions[0][idx], masked_positions[1][idx]] = True
+                    
+                    mask = new_mask
+                else:  # low_confidence
+                    # Remask tokens with lowest confidence
+                    token_probs = torch.gather(probs, 1, next_tokens.unsqueeze(-1)).squeeze(-1)
+                    num_to_remask = int(mask.sum().item() * args.remask_ratio)
+                    
+                    _, sorted_indices = torch.sort(token_probs)
+                    remask_indices = sorted_indices[:num_to_remask]
+                    
+                    new_mask = torch.zeros_like(mask)
+                    masked_positions = torch.nonzero(mask, as_tuple=True)
+                    for idx in remask_indices:
+                        new_mask[masked_positions[0][idx], masked_positions[1][idx]] = True
+                    
+                    mask = new_mask
+            
+            # Update sequence with generated tokens
+            sequence[:, prompt_length + block_start:block_end] = masked_sequence[:, prompt_length + block_start:block_end]
+            
+            # Check if we've reached a real EOS token (not padding)
+            eos_pos = (sequence[0, prompt_length:prompt_length + block_start + block_size] == tokenizer.eos_token_id).nonzero()
+            if len(eos_pos) > 0:
+                # Keep only up to the first EOS token
+                first_eos = eos_pos[0].item() + prompt_length
+                sequence = sequence[:, :first_eos + 1]
+                break
+    
+    # Decode the generated sequence
+    output = tokenizer.decode(sequence[0, prompt_length:], skip_special_tokens=True)
+    
+    # Remove any remaining EOS tokens from the output
+    output = output.replace(tokenizer.eos_token, "")
+    
+    return output.strip()
 
 def main():
-    parser = argparse.ArgumentParser(description="Test fine-tuned LLaDA model")
-    parser.add_argument("--model_path", type=str, default="sft_output/final", help="Path to fine-tuned model")
-    parser.add_argument("--steps", type=int, default=128, help="Number of sampling steps")
-    parser.add_argument("--gen_length", type=int, default=128, help="Length of generated text")
-    parser.add_argument("--block_length", type=int, default=32, help="Block length for semi-autoregressive sampling")
-    parser.add_argument("--temperature", type=float, default=0.0, help="Temperature for sampling")
-    parser.add_argument("--cfg_scale", type=float, default=0.0, help="Classifier-free guidance scale")
-    parser.add_argument("--remasking", type=str, default="low_confidence", choices=["low_confidence", "random"], 
-                        help="Remasking strategy")
-    parser.add_argument("--gpu_id", type=int, default=0, help="GPU ID to use (default: 0)")
+    """Main function for inference."""
+    args = parse_args()
     
-    args = parser.parse_args()
+    # Set random seed
+    set_seed(args.seed)
     
-    # Check available GPUs and set device
-    if torch.cuda.is_available():
-        num_gpus = torch.cuda.device_count()
-        print(f"Number of available GPUs: {num_gpus}")
-        
-        if args.gpu_id >= 0 and args.gpu_id < num_gpus:
-            device = torch.device(f"cuda:{args.gpu_id}")
-            print(f"Using device: {device}")
-        else:
-            print(f"Specified GPU ID {args.gpu_id} is not available. Available GPUs: {num_gpus}")
-            print(f"Defaulting to CPU")
-            device = torch.device("cpu")
-    else:
-        print("CUDA is not available. Using CPU")
-        device = torch.device("cpu")
+    # Setup device
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
     
-    # Load model and tokenizer
-    print(f"Loading model from {args.model_path}")
-    model = AutoModel.from_pretrained(args.model_path, trust_remote_code=True)
+    # Load tokenizer and model
+    logger.info(f"Loading tokenizer and model from {args.model_path}")
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+    model = AutoModelForMaskedLM.from_pretrained(args.model_path)
     model.to(device)
     model.eval()
     
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
-    
-    # Test prompts
-    test_prompts = [
-        "What is the capital of Germany?",
-        "Explain the concept of quantum computing in simple terms.",
-        "Write a short story about a robot who learns to feel emotions."
-    ]
-    
-    print("\n" + "="*50)
-    print(f"Testing with {len(test_prompts)} prompts")
-    print("="*50)
-    
-    for i, prompt in enumerate(test_prompts):
-        print(f"\nPrompt {i+1}: {prompt}")
+    if args.interactive:
+        logger.info("Running in interactive mode. Type 'exit' to quit.")
+        while True:
+            prompt = input("\nUser: ")
+            if prompt.lower() == "exit":
+                break
+            
+            logger.info("Generating response...")
+            response = generate_response(model, tokenizer, prompt, args, device)
+            print(f"\nAssistant: {response}")
+    else:
+        if args.prompt is None:
+            logger.error("Please provide a prompt using --prompt or use --interactive mode.")
+            return
         
-        # Format as chat template
-        messages = [{"role": "user", "content": prompt}]
-        formatted_prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
-        
-        # Tokenize
-        input_ids = tokenizer(formatted_prompt)['input_ids']
-        input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
-        
-        # Generate response
-        with torch.no_grad():
-            output = generate(
-                model, 
-                input_ids, 
-                steps=args.steps, 
-                gen_length=args.gen_length, 
-                block_length=args.block_length,
-                temperature=args.temperature, 
-                cfg_scale=args.cfg_scale, 
-                remasking=args.remasking
-            )
-        
-        # Decode response
-        response = tokenizer.batch_decode(output[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+        logger.info("Generating response...")
+        response = generate_response(model, tokenizer, args.prompt, args, device)
+        print(f"\nPrompt: {args.prompt}")
         print(f"Response: {response}")
-        print("-"*50)
 
 if __name__ == "__main__":
     main()
