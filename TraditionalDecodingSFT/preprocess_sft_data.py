@@ -9,7 +9,7 @@ def load_conversations(file_path):
         data = json.load(f)
     return data['messages']
 
-def preprocess_conversations(conversations, tokenizer, max_length=4096):
+def preprocess_conversations(conversations, tokenizer, max_length=256):
     """
     Preprocess conversations for LLaDA fine-tuning.
     
@@ -95,7 +95,7 @@ def main():
                         help="Path to output processed data file")
     parser.add_argument("--model_name", type=str, default="GSAI-ML/LLaDA-8B-Instruct",
                         help="Model name or path for tokenizer")
-    parser.add_argument("--max_length", type=int, default=4096,
+    parser.add_argument("--max_length", type=int, default=256,
                         help="Maximum sequence length")
     
     args = parser.parse_args()

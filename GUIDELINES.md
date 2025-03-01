@@ -33,11 +33,11 @@ def forward_process(input_ids, eps=1e-3):
     noisy_batch = torch.where(masked_indices, 126336, input_ids)
     return noisy_batch, masked_indices, p_mask
 
-# The data is an integer tensor of shape (b, 4096), 
-# where b represents the batch size and 4096 is the sequence length.
+# The data is an integer tensor of shape (b, 256), 
+# where b represents the batch size and 256 is the sequence length.
 input_ids = batch["input_ids"]
 
-# We set 1% of the pre-training data to a random length that is uniformly sampled from the range [1, 4096].
+# We set 1% of the pre-training data to a random length that is uniformly sampled from the range [1, 256].
 # The following implementation is not elegant and involves some data waste. 
 # However, the data waste is minimal, so we ignore it.
 if torch.rand(1) < 0.01:

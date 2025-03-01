@@ -52,7 +52,7 @@ python preprocess_alignment_data.py \
     --input_file sft_data/llama_logits.json \
     --output_file sft_data/processed_alignment.pt \
     --model_name GSAI-ML/LLaDA-8B-Instruct \
-    --max_length 4096
+    --max_length 256
 ```
 
 ### 2. Alignment Fine-Tuning
