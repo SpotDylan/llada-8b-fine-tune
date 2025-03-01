@@ -7,6 +7,7 @@ from transformers import AutoModel, AutoTokenizer, get_linear_schedule_with_warm
 from tqdm import tqdm
 import logging
 import time
+import traceback
 from datetime import datetime
 
 os.environ["HF_HOME"] = "/mount/model-cache"
@@ -157,138 +158,221 @@ def train(args):
     all_losses = []
     all_accuracies = []
     
-    for epoch in range(args.num_epochs):
-        logger.info(f"Starting Epoch {epoch+1}/{args.num_epochs}")
-        epoch_start_time = time.time()
+    try:
+        for epoch in range(args.num_epochs):
+            logger.info(f"Starting Epoch {epoch+1}/{args.num_epochs}")
+            epoch_start_time = time.time()
+            
+            epoch_loss = 0
+            epoch_correct_predictions = 0
+            epoch_total_predictions = 0
+            progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}")
+            
+            for batch_idx, batch in enumerate(progress_bar):
+                try:
+                    batch_start_time = time.time()
+                    input_ids, prompt_lengths = batch["input_ids"].to(device), batch["prompt_lengths"].to(device)
+                    
+                    # Log memory usage before forward pass
+                    if device.type == 'cuda':
+                        allocated_memory = torch.cuda.memory_allocated(device) / (1024 ** 3)  # GB
+                        reserved_memory = torch.cuda.memory_reserved(device) / (1024 ** 3)  # GB
+                        logger.info(f"GPU Memory before forward pass - Allocated: {allocated_memory:.2f} GB, Reserved: {reserved_memory:.2f} GB")
+                    
+                    # Apply forward process to get noisy batch
+                    noisy_batch, _, p_mask = forward_process(input_ids)
+                    
+                    # Do not add noise to the prompt (as mentioned in the guidelines)
+                    token_positions = torch.arange(noisy_batch.shape[1], device=device).expand(noisy_batch.size(0), noisy_batch.size(1))
+                    prompt_mask = (token_positions < prompt_lengths.unsqueeze(1))
+                    noisy_batch[prompt_mask] = input_ids[prompt_mask]
+                    
+                    # Calculate the answer length (including the padded <EOS> tokens)
+                    prompt_mask = prompt_mask.to(torch.int64)    
+                    answer_lengths = torch.sum((1 - prompt_mask), dim=-1, keepdim=True)
+                    answer_lengths = answer_lengths.repeat(1, noisy_batch.shape[1])    
+                    
+                    masked_indices = (noisy_batch == 126336)
+                    
+                    # Forward pass
+                    logits = model(input_ids=noisy_batch).logits
+                    
+                    # Calculate loss
+                    token_loss = F.cross_entropy(logits[masked_indices], input_ids[masked_indices], reduction='none') / p_mask[masked_indices]
+                    ce_loss = torch.sum(token_loss / answer_lengths[masked_indices]) / input_ids.shape[0]
+                    
+                    # Calculate accuracy for masked tokens
+                    predictions = torch.argmax(logits[masked_indices], dim=-1)
+                    correct_predictions = (predictions == input_ids[masked_indices]).sum().item()
+                    total_predictions = masked_indices.sum().item()
+                    
+                    accuracy = correct_predictions / total_predictions if total_predictions > 0 else 0
+                    
+                    # Log memory usage before backward pass
+                    if device.type == 'cuda':
+                        allocated_memory = torch.cuda.memory_allocated(device) / (1024 ** 3)  # GB
+                        reserved_memory = torch.cuda.memory_reserved(device) / (1024 ** 3)  # GB
+                        logger.info(f"GPU Memory before backward pass - Allocated: {allocated_memory:.2f} GB, Reserved: {reserved_memory:.2f} GB")
+                    
+                    # Backward pass
+                    optimizer.zero_grad()
+                    ce_loss.backward()
+                    optimizer.step()
+                    scheduler.step()
+                
+                except RuntimeError as e:
+                    if "CUDA out of memory" in str(e):
+                        logger.error(f"CUDA Out of Memory Error in batch {batch_idx}:")
+                        logger.error(str(e))
+                        
+                        # Log detailed GPU memory information
+                        if device.type == 'cuda':
+                            try:
+                                total_memory = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)  # GB
+                                allocated_memory = torch.cuda.memory_allocated(device) / (1024 ** 3)  # GB
+                                reserved_memory = torch.cuda.memory_reserved(device) / (1024 ** 3)  # GB
+                                free_memory = total_memory - reserved_memory
+                                
+                                logger.error(f"GPU Memory Stats at OOM:")
+                                logger.error(f"  Total GPU Memory: {total_memory:.2f} GB")
+                                logger.error(f"  Allocated Memory: {allocated_memory:.2f} GB")
+                                logger.error(f"  Reserved Memory: {reserved_memory:.2f} GB")
+                                logger.error(f"  Free Memory: {free_memory:.2f} GB")
+                            except Exception as mem_error:
+                                logger.error(f"Error getting memory stats: {str(mem_error)}")
+                        
+                        logger.error("Suggestions to fix OOM error:")
+                        logger.error("1. Reduce batch size (current: {})".format(args.batch_size))
+                        logger.error("2. Use a smaller model or reduce sequence length")
+                        logger.error("3. Enable gradient checkpointing or mixed precision training")
+                        
+                        # Return partial metrics
+                        return {
+                            "losses": all_losses,
+                            "accuracies": all_accuracies,
+                            "error": "CUDA out of memory",
+                            "completed_epochs": epoch,
+                            "completed_batches": batch_idx
+                        }
+                    else:
+                        logger.error(f"Runtime error in batch {batch_idx}:")
+                        logger.error(str(e))
+                        logger.error(traceback.format_exc())
+                        raise
+            
+                # Update metrics
+                loss_value = ce_loss.item()
+                epoch_loss += loss_value
+                epoch_correct_predictions += correct_predictions
+                epoch_total_predictions += total_predictions
+                
+                all_losses.append(loss_value)
+                all_accuracies.append(accuracy)
+                
+                global_step += 1
+                
+                # Update progress bar
+                progress_bar.set_postfix({
+                    "loss": f"{loss_value:.4f}", 
+                    "accuracy": f"{accuracy:.4f}",
+                    "lr": f"{scheduler.get_last_lr()[0]:.2e}"
+                })
+                
+                # Log detailed metrics periodically
+                if batch_idx % args.log_steps == 0:
+                    batch_time = time.time() - batch_start_time
+                    logger.info(
+                        f"Epoch: {epoch+1}/{args.num_epochs} | "
+                        f"Batch: {batch_idx}/{len(dataloader)} | "
+                        f"Step: {global_step} | "
+                        f"Loss: {loss_value:.4f} | "
+                        f"Accuracy: {accuracy:.4f} | "
+                        f"LR: {scheduler.get_last_lr()[0]:.2e} | "
+                        f"Batch time: {batch_time:.2f}s"
+                    )
+            
+                # Save checkpoint
+                if global_step % args.save_steps == 0:
+                    try:
+                        checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                        os.makedirs(checkpoint_dir, exist_ok=True)
+                        model.save_pretrained(checkpoint_dir)
+                        logger.info(f"Saved checkpoint to {checkpoint_dir}")
+                    except Exception as e:
+                        logger.error(f"Error saving checkpoint: {str(e)}")
         
-        epoch_loss = 0
-        epoch_correct_predictions = 0
-        epoch_total_predictions = 0
-        progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}")
-        
-        for batch_idx, batch in enumerate(progress_bar):
-            batch_start_time = time.time()
-            input_ids, prompt_lengths = batch["input_ids"].to(device), batch["prompt_lengths"].to(device)
+            # Calculate epoch metrics
+            avg_epoch_loss = epoch_loss / len(dataloader)
+            epoch_accuracy = epoch_correct_predictions / epoch_total_predictions if epoch_total_predictions > 0 else 0
+            epoch_time = time.time() - epoch_start_time
             
-            # Apply forward process to get noisy batch
-            noisy_batch, _, p_mask = forward_process(input_ids)
+            # Log epoch summary
+            logger.info(
+                f"Epoch {epoch+1}/{args.num_epochs} completed in {epoch_time:.2f}s | "
+                f"Average Loss: {avg_epoch_loss:.4f} | "
+                f"Accuracy: {epoch_accuracy:.4f}"
+            )
             
-            # Do not add noise to the prompt (as mentioned in the guidelines)
-            token_positions = torch.arange(noisy_batch.shape[1], device=device).expand(noisy_batch.size(0), noisy_batch.size(1))
-            prompt_mask = (token_positions < prompt_lengths.unsqueeze(1))
-            noisy_batch[prompt_mask] = input_ids[prompt_mask]
-            
-            # Calculate the answer length (including the padded <EOS> tokens)
-            prompt_mask = prompt_mask.to(torch.int64)    
-            answer_lengths = torch.sum((1 - prompt_mask), dim=-1, keepdim=True)
-            answer_lengths = answer_lengths.repeat(1, noisy_batch.shape[1])    
-            
-            masked_indices = (noisy_batch == 126336)
-            
-            # Forward pass
-            logits = model(input_ids=noisy_batch).logits
-            
-            # Calculate loss
-            token_loss = F.cross_entropy(logits[masked_indices], input_ids[masked_indices], reduction='none') / p_mask[masked_indices]
-            ce_loss = torch.sum(token_loss / answer_lengths[masked_indices]) / input_ids.shape[0]
-            
-            # Calculate accuracy for masked tokens
-            predictions = torch.argmax(logits[masked_indices], dim=-1)
-            correct_predictions = (predictions == input_ids[masked_indices]).sum().item()
-            total_predictions = masked_indices.sum().item()
-            
-            accuracy = correct_predictions / total_predictions if total_predictions > 0 else 0
-            
-            # Backward pass
-            optimizer.zero_grad()
-            ce_loss.backward()
-            optimizer.step()
-            scheduler.step()
-            
-            # Update metrics
-            loss_value = ce_loss.item()
-            epoch_loss += loss_value
-            epoch_correct_predictions += correct_predictions
-            epoch_total_predictions += total_predictions
-            
-            all_losses.append(loss_value)
-            all_accuracies.append(accuracy)
-            
-            global_step += 1
-            
-            # Update progress bar
-            progress_bar.set_postfix({
-                "loss": f"{loss_value:.4f}", 
-                "accuracy": f"{accuracy:.4f}",
-                "lr": f"{scheduler.get_last_lr()[0]:.2e}"
-            })
-            
-            # Log detailed metrics periodically
-            if batch_idx % args.log_steps == 0:
-                batch_time = time.time() - batch_start_time
-                logger.info(
-                    f"Epoch: {epoch+1}/{args.num_epochs} | "
-                    f"Batch: {batch_idx}/{len(dataloader)} | "
-                    f"Step: {global_step} | "
-                    f"Loss: {loss_value:.4f} | "
-                    f"Accuracy: {accuracy:.4f} | "
-                    f"LR: {scheduler.get_last_lr()[0]:.2e} | "
-                    f"Batch time: {batch_time:.2f}s"
-                )
-            
-            # Save checkpoint
-            if global_step % args.save_steps == 0:
-                checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                os.makedirs(checkpoint_dir, exist_ok=True)
-                model.save_pretrained(checkpoint_dir)
-                logger.info(f"Saved checkpoint to {checkpoint_dir}")
-        
-        # Calculate epoch metrics
-        avg_epoch_loss = epoch_loss / len(dataloader)
-        epoch_accuracy = epoch_correct_predictions / epoch_total_predictions if epoch_total_predictions > 0 else 0
-        epoch_time = time.time() - epoch_start_time
-        
-        # Log epoch summary
-        logger.info(
-            f"Epoch {epoch+1}/{args.num_epochs} completed in {epoch_time:.2f}s | "
-            f"Average Loss: {avg_epoch_loss:.4f} | "
-            f"Accuracy: {epoch_accuracy:.4f}"
-        )
-        
-        # Save model after each epoch
-        epoch_dir = os.path.join(args.output_dir, f"epoch-{epoch+1}")
-        os.makedirs(epoch_dir, exist_ok=True)
-        model.save_pretrained(epoch_dir)
-        logger.info(f"Saved model after epoch {epoch+1} to {epoch_dir}")
+            # Save model after each epoch
+            try:
+                epoch_dir = os.path.join(args.output_dir, f"epoch-{epoch+1}")
+                os.makedirs(epoch_dir, exist_ok=True)
+                model.save_pretrained(epoch_dir)
+                logger.info(f"Saved model after epoch {epoch+1} to {epoch_dir}")
+                
+                # Create a local copy of the config.json file to avoid HuggingFace Hub errors
+                if os.path.exists(os.path.join(epoch_dir, "config.json")):
+                    logger.info(f"Model config saved successfully")
+            except Exception as e:
+                logger.error(f"Error saving model after epoch: {str(e)}")
     
-    # Calculate and log final metrics
-    final_avg_loss = sum(all_losses) / len(all_losses)
-    final_avg_accuracy = sum(all_accuracies) / len(all_accuracies)
+        # Calculate and log final metrics
+        final_avg_loss = sum(all_losses) / len(all_losses) if all_losses else float('nan')
+        final_avg_accuracy = sum(all_accuracies) / len(all_accuracies) if all_accuracies else float('nan')
+        
+        logger.info(f"Training completed!")
+        logger.info(f"Final average loss: {final_avg_loss:.4f}")
+        logger.info(f"Final average accuracy: {final_avg_accuracy:.4f}")
+        
+        # Save final model
+        try:
+            final_dir = os.path.join(args.output_dir, "final")
+            os.makedirs(final_dir, exist_ok=True)
+            model.save_pretrained(final_dir)
+            logger.info(f"Saved final model to {final_dir}")
+            
+            # Create a local copy of the config.json file to avoid HuggingFace Hub errors
+            if os.path.exists(os.path.join(final_dir, "config.json")):
+                logger.info(f"Final model config saved successfully")
+        except Exception as e:
+            logger.error(f"Error saving final model: {str(e)}")
+        
+        # Return metrics for potential visualization
+        return {
+            "losses": all_losses,
+            "accuracies": all_accuracies,
+            "final_loss": final_avg_loss,
+            "final_accuracy": final_avg_accuracy,
+            "completed_epochs": args.num_epochs
+        }
     
-    logger.info(f"Training completed!")
-    logger.info(f"Final average loss: {final_avg_loss:.4f}")
-    logger.info(f"Final average accuracy: {final_avg_accuracy:.4f}")
-    
-    # Save final model
-    final_dir = os.path.join(args.output_dir, "final")
-    os.makedirs(final_dir, exist_ok=True)
-    model.save_pretrained(final_dir)
-    logger.info(f"Saved final model to {final_dir}")
-    
-    # Return metrics for potential visualization
-    return {
-        "losses": all_losses,
-        "accuracies": all_accuracies,
-        "final_loss": final_avg_loss,
-        "final_accuracy": final_avg_accuracy
-    }
+    except Exception as e:
+        logger.error(f"Unexpected error during training: {str(e)}")
+        logger.error(traceback.format_exc())
+        
+        # Return partial metrics
+        return {
+            "losses": all_losses,
+            "accuracies": all_accuracies,
+            "error": str(e)
+        }
 
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune LLaDA with SFT")
     parser.add_argument("--model_name", type=str, default="GSAI-ML/LLaDA-8B-Base", help="Model name or path")
     parser.add_argument("--data_path", type=str, default="sft_data/processed_data.pt", help="Path to processed data")
     parser.add_argument("--output_dir", type=str, default="sft_output", help="Output directory")
-    parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size (reduce to save memory)")
     parser.add_argument("--learning_rate", type=float, default=2.5e-5, help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=3, help="Number of epochs")
     parser.add_argument("--save_steps", type=int, default=500, help="Save checkpoint every X steps")
