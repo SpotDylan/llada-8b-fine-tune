@@ -11,7 +11,7 @@ def load_alignment_data(file_path):
         data = json.load(f)
     return data
 
-def preprocess_alignment_data(data, tokenizer, max_length=256, target_vocab_size=None):
+def preprocess_alignment_data(data, tokenizer, max_length=256):
     """
     Preprocess alignment data for LLaDA fine-tuning.
     
@@ -47,13 +47,6 @@ def preprocess_alignment_data(data, tokenizer, max_length=256, target_vocab_size
         # Extract logits for each token in the response
         # Initialize a tensor to store the full logits for each response token
         vocab_size = len(tokenizer)
-        
-        # If target_vocab_size is specified, use it instead of the tokenizer's vocab size
-        # This allows us to handle vocabulary size mismatches between models
-        if target_vocab_size is not None:
-            vocab_size = min(vocab_size, target_vocab_size)
-            print(f"Using target vocabulary size: {vocab_size}")
-            
         llama_logits = torch.zeros((combined_ids.shape[0], vocab_size), dtype=torch.float32)
         
         # Verify that the number of logits entries matches the response length
@@ -130,8 +123,6 @@ def main():
                         help="Model name or path for tokenizer")
     parser.add_argument("--max_length", type=int, default=256,
                         help="Maximum sequence length")
-    parser.add_argument("--target_vocab_size", type=int, default=None,
-                        help="Target vocabulary size (to handle mismatches between models)")
     
     args = parser.parse_args()
     
@@ -146,7 +137,7 @@ def main():
     
     # Preprocess alignment data
     print("Preprocessing alignment data...")
-    processed_data = preprocess_alignment_data(data, tokenizer, args.max_length, args.target_vocab_size)
+    processed_data = preprocess_alignment_data(data, tokenizer, args.max_length)
     
     # Save processed data
     save_processed_data(processed_data, args.output_file)

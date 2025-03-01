@@ -1,0 +1,50 @@
+2025-03-01 09:31:32,774 - __main__ - INFO - === Training Arguments ===
+2025-03-01 09:31:32,774 - __main__ - INFO - data_path: sft_data/processed_alignment.pt
+2025-03-01 09:31:32,774 - __main__ - INFO - model_name: GSAI-ML/LLaDA-8B-Instruct
+2025-03-01 09:31:32,774 - __main__ - INFO - output_dir: alignment_output
+2025-03-01 09:31:32,774 - __main__ - INFO - batch_size: 2
+2025-03-01 09:31:32,774 - __main__ - INFO - learning_rate: 2.5e-05
+2025-03-01 09:31:32,774 - __main__ - INFO - weight_decay: 0.1
+2025-03-01 09:31:32,774 - __main__ - INFO - epochs: 3
+2025-03-01 09:31:32,774 - __main__ - INFO - warmup_steps: 50
+2025-03-01 09:31:32,774 - __main__ - INFO - save_steps: 500
+2025-03-01 09:31:32,774 - __main__ - INFO - local_rank: -1
+2025-03-01 09:31:32,774 - __main__ - INFO - log_level: INFO
+2025-03-01 09:31:32,774 - __main__ - INFO - gradient_accumulation_steps: 1
+2025-03-01 09:31:32,774 - __main__ - INFO - max_grad_norm: 1.0
+2025-03-01 09:31:32,774 - __main__ - INFO - temperature: 1.0
+2025-03-01 09:31:32,774 - __main__ - INFO - log_interval: 100
+2025-03-01 09:31:32,774 - __main__ - INFO - === System Information ===
+2025-03-01 09:31:32,774 - __main__ - INFO - PyTorch version: 2.6.0
+2025-03-01 09:31:32,774 - __main__ - INFO - CUDA available: No
+2025-03-01 09:31:32,774 - __main__ - INFO - Python version: 3.9.6
+2025-03-01 09:31:32,774 - __main__ - INFO - OS: Darwin 23.4.0
+2025-03-01 09:31:32,781 - __main__ - INFO - CPU count: 11 logical, 11 physical
+2025-03-01 09:31:32,782 - __main__ - INFO - RAM: 18.00 GB total, 6.86 GB available
+2025-03-01 09:31:32,782 - __main__ - INFO - === End System Information ===
+2025-03-01 09:31:32,782 - __main__ - INFO - Using device: cpu
+2025-03-01 09:31:32,782 - __main__ - INFO - Output directory: alignment_output
+2025-03-01 09:31:32,782 - __main__ - INFO - Loading model from GSAI-ML/LLaDA-8B-Instruct...
+2025-03-01 09:32:16,044 - __main__ - INFO - Model loaded in 43.26 seconds
+2025-03-01 09:32:16,048 - __main__ - INFO - === Model Information ===
+2025-03-01 09:32:16,051 - __main__ - INFO - Model type: LLaDAModelLM
+2025-03-01 09:32:16,051 - __main__ - INFO - Total parameters: 8,015,581,184
+2025-03-01 09:32:16,051 - __main__ - INFO - Trainable parameters: 8,015,581,184 (100.00%)
+2025-03-01 09:32:16,051 - __main__ - INFO - Model architecture:
+2025-03-01 09:32:16,051 - __main__ - INFO -   model: LLaDAModel
+2025-03-01 09:32:16,051 - __main__ - INFO - Loading dataset from sft_data/processed_alignment.pt...
+2025-03-01 09:32:16,051 - __main__ - INFO - Loading dataset from sft_data/processed_alignment.pt
+2025-03-01 09:32:16,091 - __main__ - INFO - Dataset loaded in 0.04 seconds
+2025-03-01 09:32:16,092 - __main__ - INFO - Dataset size: 2 examples
+2025-03-01 09:32:16,092 - __main__ - INFO - Sequence length stats: min=37, max=38, avg=37.50
+2025-03-01 09:32:16,092 - __main__ - INFO - Prompt length stats: min=33, max=33, avg=33.00
+2025-03-01 09:32:16,092 - __main__ - INFO - Dataset loaded in 0.04 seconds
+2025-03-01 09:32:16,092 - __main__ - INFO - Created DataLoader with 1 batches
+2025-03-01 09:32:16,092 - __main__ - INFO - Setting up optimizer and scheduler...
+2025-03-01 09:32:16,739 - __main__ - INFO - Optimizer: AdamW with lr=2.5e-05, weight_decay=0.1
+2025-03-01 09:32:16,739 - __main__ - INFO - Scheduler: Linear warmup (50 steps) and decay over 3 total steps
+2025-03-01 09:32:16,739 - __main__ - INFO - === Starting Training ===
+2025-03-01 09:32:16,739 - __main__ - INFO - Starting epoch 1/3
+2025-03-01 09:32:16,752 - __main__ - INFO - Epoch 1 - Processing batch 1/1
+2025-03-01 09:32:16,752 - __main__ - INFO - Batch shape: batch_size=2, seq_length=38
+2025-03-01 10:49:17,974 - __main__ - INFO - Gradient stats - norm: 125.378570, max: 11.187500, min: 0.000000
