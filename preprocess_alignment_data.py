@@ -65,12 +65,26 @@ def preprocess_alignment_data(data, tokenizer, max_length=256):
             token_id = logit_entry["chosen_token_id"]
             if token_id != response_ids[i].item():
                 print(f"Warning: Token ID mismatch at position {i}. Expected {response_ids[i].item()}, got {token_id}")
+                # Continue anyway, as we're using the logits not the token IDs
             
             # Extract full logits array
             if "full_logits" in logit_entry:
                 # Convert the full logits array to a tensor
                 full_logits = torch.tensor(logit_entry["full_logits"], dtype=torch.float32)
-                llama_logits[position] = full_logits
+                
+                # Check if full_logits size matches vocabulary size
+                if len(full_logits) != vocab_size:
+                    print(f"Warning: full_logits size ({len(full_logits)}) doesn't match vocab_size ({vocab_size})")
+                    # Use top_5 instead since full_logits is incomplete
+                    sparse_logits = torch.full((vocab_size,), -100.0, dtype=torch.float32)
+                    for top_entry in logit_entry["top_5"]:
+                        token_id = top_entry["token_id"]
+                        if token_id < vocab_size:  # Ensure token_id is within vocab bounds
+                            logit_value = top_entry["logit"]
+                            sparse_logits[token_id] = logit_value
+                    llama_logits[position] = sparse_logits
+                else:
+                    llama_logits[position] = full_logits
             else:
                 # If full_logits is not available, use top_5 to create a sparse logits tensor
                 # Initialize with a very low value (effectively zero probability)
@@ -79,8 +93,9 @@ def preprocess_alignment_data(data, tokenizer, max_length=256):
                 # Fill in the top-5 logits
                 for top_entry in logit_entry["top_5"]:
                     token_id = top_entry["token_id"]
-                    logit_value = top_entry["logit"]
-                    sparse_logits[token_id] = logit_value
+                    if token_id < vocab_size:  # Ensure token_id is within vocab bounds
+                        logit_value = top_entry["logit"]
+                        sparse_logits[token_id] = logit_value
                 
                 llama_logits[position] = sparse_logits
         
