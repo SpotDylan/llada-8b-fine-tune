@@ -505,7 +505,7 @@ def main():
     # Training arguments
     parser.add_argument("--output_dir", type=str, default="sft_output", help="Output directory")
     parser.add_argument("--num_epochs", type=int, default=3, help="Number of epochs")
-    parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
+    parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4, help="Gradient accumulation steps")
     parser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate")
     parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay")
