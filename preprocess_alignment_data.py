@@ -52,10 +52,13 @@ def preprocess_alignment_data(data, tokenizer, max_length=4096):
         # Verify that the number of logits entries matches the response length
         if len(logits_data) != response_length:
             print(f"Warning: Mismatch between response length ({response_length}) and logits data length ({len(logits_data)})")
-            continue
+            # Instead of skipping, we'll use the minimum length to avoid losing examples
+            # This ensures we only process tokens that have corresponding logits
+            response_length = min(response_length, len(logits_data))
+            response_ids = response_ids[:response_length]
         
         # Fill in the logits for the response tokens
-        for i, logit_entry in enumerate(logits_data):
+        for i, logit_entry in enumerate(logits_data[:response_length]):
             position = prompt_length + i
             
             # Verify token consistency

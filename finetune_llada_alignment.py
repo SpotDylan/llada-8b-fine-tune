@@ -52,19 +52,25 @@ class AlignmentDataset(Dataset):
         logger.info(f"Dataset loaded in {time.time() - start_time:.2f} seconds")
         
         # Log dataset statistics
-        lengths = [item["input_ids"].shape[0] for item in self.data]
-        
-        # Handle both tensor and integer types for prompt_length
-        prompt_lengths = []
-        for item in self.data:
-            if hasattr(item["prompt_length"], "item"):
-                prompt_lengths.append(item["prompt_length"].item())
-            else:
-                prompt_lengths.append(item["prompt_length"])
-        
         logger.info(f"Dataset size: {len(self.data)} examples")
-        logger.info(f"Sequence length stats: min={min(lengths)}, max={max(lengths)}, avg={sum(lengths)/len(lengths):.2f}")
-        logger.info(f"Prompt length stats: min={min(prompt_lengths)}, max={max(prompt_lengths)}, avg={sum(prompt_lengths)/len(prompt_lengths):.2f}")
+        
+        # Only calculate statistics if there are examples
+        if len(self.data) > 0:
+            lengths = [item["input_ids"].shape[0] for item in self.data]
+            
+            # Handle both tensor and integer types for prompt_length
+            prompt_lengths = []
+            for item in self.data:
+                if hasattr(item["prompt_length"], "item"):
+                    prompt_lengths.append(item["prompt_length"].item())
+                else:
+                    prompt_lengths.append(item["prompt_length"])
+            
+            logger.info(f"Sequence length stats: min={min(lengths)}, max={max(lengths)}, avg={sum(lengths)/len(lengths):.2f}")
+            logger.info(f"Prompt length stats: min={min(prompt_lengths)}, max={max(prompt_lengths)}, avg={sum(prompt_lengths)/len(prompt_lengths):.2f}")
+        else:
+            logger.error("Dataset is empty. Please check the preprocessing step.")
+            raise ValueError("Dataset is empty. Cannot proceed with training.")
         
     def __len__(self):
         return len(self.data)
