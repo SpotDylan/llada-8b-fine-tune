@@ -68,7 +68,7 @@ python finetune_llada.py \
     --gradient_accumulation_steps $GRADIENT_ACCUMULATION_STEPS \
     --learning_rate $LEARNING_RATE \
     --warmup_ratio $WARMUP_RATIO \
-    --use_bf16
+    --use_fp8
 
 if [ $? -ne 0 ]; then
     echo "Error fine-tuning model. Exiting."

@@ -18,6 +18,15 @@ from transformers import (
 )
 from tqdm import tqdm
 
+# Import FP8 related modules if available
+try:
+    import transformer_engine.pytorch as te
+    from transformer_engine.common import recipe
+    FP8_AVAILABLE = True
+except ImportError:
+    FP8_AVAILABLE = False
+    print("Warning: transformer_engine not found. FP8 precision will not be available.")
+
 os.environ['HF_HOME'] = '/mount/model-cache'
 
 class SFTDataset(Dataset):
@@ -220,6 +229,50 @@ def finetune(args):
         trust_remote_code=True,
         torch_dtype=torch.bfloat16 if args.use_bf16 else torch.float32,
     )
+    
+    # Apply FP8 precision if requested and available
+    if args.use_fp8 and FP8_AVAILABLE:
+        print("Using FP8 precision for training")
+        # Create FP8 recipe
+        fp8_recipe = recipe.DelayedScaling(
+            margin=0,
+            interval=1,
+            fp8_format=recipe.Format.E4M3,
+            amax_history_len=16,
+            amax_compute_algo="max",
+        )
+        
+        # Wrap model layers with FP8 modules
+        # Note: This is a simplified approach and may need to be adapted based on the specific model architecture
+        for name, module in model.named_modules():
+            if isinstance(module, torch.nn.Linear):
+                parent_name = '.'.join(name.split('.')[:-1])
+                layer_name = name.split('.')[-1]
+                parent = model
+                for part in parent_name.split('.'):
+                    if part:
+                        parent = getattr(parent, part)
+                
+                # Replace with FP8 linear layer
+                fp8_linear = te.Linear(
+                    module.in_features,
+                    module.out_features,
+                    bias=module.bias is not None,
+                    fp8=True,
+                    fp8_recipe=fp8_recipe,
+                )
+                
+                # Copy weights and biases
+                with torch.no_grad():
+                    fp8_linear.weight.copy_(module.weight)
+                    if module.bias is not None:
+                        fp8_linear.bias.copy_(module.bias)
+                
+                # Replace the original module
+                setattr(parent, layer_name, fp8_linear)
+        
+        print("Model converted to use FP8 precision")
+    
     model.to(device)
     
     # Load dataset
@@ -318,6 +371,7 @@ def main():
     parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Maximum gradient norm")
     parser.add_argument("--warmup_ratio", type=float, default=0.1, help="Warmup ratio")
     parser.add_argument("--use_bf16", action="store_true", help="Use bfloat16 precision")
+    parser.add_argument("--use_fp8", action="store_true", help="Use FP8 precision (requires transformer_engine)")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     
