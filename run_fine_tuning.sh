@@ -1,37 +1,111 @@
 #!/bin/bash
 
-# run_fine_tuning.sh
-# End-to-end SFT workflow for LLaDA-8B-Instruct
+# Run Fine-Tuning Pipeline for LLaDA
+# This script runs the entire supervised fine-tuning workflow for LLaDA
 
-set -e  # Exit immediately on error
+# Set variables
+NUM_EXAMPLES=500
+MULTI_TURN_RATIO=0.3
+MAX_LENGTH=2048
+NUM_EPOCHS=3
+BATCH_SIZE=4
+GRADIENT_ACCUMULATION_STEPS=4
+LEARNING_RATE=2e-5
+WARMUP_RATIO=0.1
+STEPS=128
+GEN_LENGTH=128
+BLOCK_LENGTH=32
 
-# Configuration
-DATA_PATH="fake_sft_data.jsonl"
-PROCESSED_DATA="processed_sft_data.pt"
-MODEL_SAVE_PATH="llada-8b-instruct-sft.pt"
-MAX_SEQ_LENGTH=4096  # Should match model's max context length
+# Create directories
+mkdir -p sft_data/preprocessed
+mkdir -p sft_output
 
-# Step 1: Data preprocessing
-echo "Starting data preprocessing..."
+# Print header
+echo "========================================================"
+echo "LLaDA Supervised Fine-Tuning Pipeline"
+echo "========================================================"
+echo ""
+
+# Step 1: Generate fake dataset
+echo "Step 1: Generating fake dataset..."
+python generate_fake_sft_data.py \
+    --num_examples $NUM_EXAMPLES \
+    --output sft_data/conversations.json \
+    --multi_turn_ratio $MULTI_TURN_RATIO
+
+if [ $? -ne 0 ]; then
+    echo "Error generating fake dataset. Exiting."
+    exit 1
+fi
+echo "Fake dataset generated successfully."
+echo ""
+
+# Step 2: Preprocess the dataset
+echo "Step 2: Preprocessing the dataset..."
 python preprocess_sft_data.py \
-    --data_path "$DATA_PATH" \
-    --max_length $MAX_SEQ_LENGTH \
-    --save_path "$PROCESSED_DATA"
+    --input sft_data/conversations.json \
+    --output_dir sft_data/preprocessed \
+    --tokenizer GSAI-ML/LLaDA-8B-Base \
+    --max_length $MAX_LENGTH
 
-# Step 2: Supervised Fine-Tuning
-echo "Starting fine-tuning..."
+if [ $? -ne 0 ]; then
+    echo "Error preprocessing dataset. Exiting."
+    exit 1
+fi
+echo "Dataset preprocessed successfully."
+echo ""
+
+# Step 3: Fine-tune the model
+echo "Step 3: Fine-tuning the model..."
+echo "This step may take a long time depending on your hardware."
 python finetune_llada.py \
-    --processed_data "$PROCESSED_DATA" \
-    --model_save_path "$MODEL_SAVE_PATH" \
-    --batch_size 2 \
-    --epochs 3 \
-    --learning_rate 2.5e-5
+    --data sft_data/preprocessed/preprocessed_data.pt \
+    --tokenizer sft_data/preprocessed/tokenizer \
+    --model GSAI-ML/LLaDA-8B-Base \
+    --output_dir sft_output \
+    --num_epochs $NUM_EPOCHS \
+    --batch_size $BATCH_SIZE \
+    --gradient_accumulation_steps $GRADIENT_ACCUMULATION_STEPS \
+    --learning_rate $LEARNING_RATE \
+    --warmup_ratio $WARMUP_RATIO \
+    --use_bf16
 
-# Step 3: Inference test
-echo "Running inference test..."
+if [ $? -ne 0 ]; then
+    echo "Error fine-tuning model. Exiting."
+    exit 1
+fi
+echo "Model fine-tuned successfully."
+echo ""
+
+# Step 4: Run inference examples
+echo "Step 4: Running inference examples..."
 python inference_example.py \
-    --model_path "$MODEL_SAVE_PATH" \
-    --prompt "Calculate 3 + 5." \
-    --max_length 64
+    --model sft_output/final_model \
+    --tokenizer sft_data/preprocessed/tokenizer \
+    --mode examples \
+    --steps $STEPS \
+    --gen_length $GEN_LENGTH \
+    --block_length $BLOCK_LENGTH \
+    --use_bf16
 
-echo "Fine-tuning workflow completed successfully!"
+if [ $? -ne 0 ]; then
+    echo "Error running inference examples. Exiting."
+    exit 1
+fi
+echo "Inference examples completed successfully."
+echo ""
+
+# Print completion message
+echo "========================================================"
+echo "LLaDA Supervised Fine-Tuning Pipeline Completed"
+echo "========================================================"
+echo ""
+echo "The fine-tuned model is saved in: sft_output/final_model"
+echo "The best model (based on training loss) is saved in: sft_output/best_model"
+echo ""
+echo "To run interactive chat with the fine-tuned model, use:"
+echo "python inference_example.py --model sft_output/final_model --tokenizer sft_data/preprocessed/tokenizer --mode interactive"
+echo ""
+echo "To run inference examples with the fine-tuned model, use:"
+echo "python inference_example.py --model sft_output/final_model --tokenizer sft_data/preprocessed/tokenizer --mode examples"
+echo ""
