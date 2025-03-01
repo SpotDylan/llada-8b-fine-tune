@@ -460,8 +460,8 @@ def finetune(args):
     
     # Create trainer with column mapping
     column_mapping = {
-        "text": "input_ids",  # Map 'input_ids' to 'text'
-        "label": "input_ids",  # Map 'input_ids' to 'label' (we'll use the same data for both)
+        "text": "text",  # Map 'text' to 'text'
+        "label": "label",  # Map 'label' to 'label'
     }
     
     # Create trainer
@@ -596,8 +596,8 @@ def finetune_distributed(rank, world_size, args):
     
     # Create trainer with column mapping
     column_mapping = {
-        "text": "input_ids",  # Map 'input_ids' to 'text'
-        "label": "input_ids",  # Map 'input_ids' to 'label' (we'll use the same data for both)
+        "text": "text",  # Map 'text' to 'text'
+        "label": "label",  # Map 'label' to 'label'
     }
     
     # Create trainer
