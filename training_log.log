@@ -1,0 +1,90 @@
+2025-03-01 06:22:00,768 - __main__ - INFO - === Training Arguments ===
+2025-03-01 06:22:00,769 - __main__ - INFO - data_path: sft_data/processed_conversations.pt
+2025-03-01 06:22:00,769 - __main__ - INFO - model_name: GSAI-ML/LLaDA-8B-Instruct
+2025-03-01 06:22:00,769 - __main__ - INFO - output_dir: sft_output
+2025-03-01 06:22:00,769 - __main__ - INFO - batch_size: 2
+2025-03-01 06:22:00,769 - __main__ - INFO - learning_rate: 2.5e-05
+2025-03-01 06:22:00,769 - __main__ - INFO - weight_decay: 0.1
+2025-03-01 06:22:00,769 - __main__ - INFO - epochs: 3
+2025-03-01 06:22:00,769 - __main__ - INFO - warmup_steps: 50
+2025-03-01 06:22:00,769 - __main__ - INFO - save_steps: 500
+2025-03-01 06:22:00,769 - __main__ - INFO - local_rank: -1
+2025-03-01 06:22:00,769 - __main__ - INFO - log_level: INFO
+2025-03-01 06:22:00,769 - __main__ - INFO - gradient_accumulation_steps: 1
+2025-03-01 06:22:00,769 - __main__ - INFO - max_grad_norm: 1.0
+2025-03-01 06:22:00,769 - __main__ - INFO - === System Information ===
+2025-03-01 06:22:00,769 - __main__ - INFO - PyTorch version: 2.6.0
+2025-03-01 06:22:00,769 - __main__ - INFO - CUDA available: No
+2025-03-01 06:22:00,769 - __main__ - INFO - Python version: 3.9.6
+2025-03-01 06:22:00,769 - __main__ - INFO - OS: Darwin 23.4.0
+2025-03-01 06:22:00,769 - __main__ - INFO - psutil not available for detailed CPU/RAM info
+2025-03-01 06:22:00,769 - __main__ - INFO - === End System Information ===
+2025-03-01 06:22:00,769 - __main__ - INFO - Using device: cpu
+2025-03-01 06:22:00,770 - __main__ - INFO - Output directory: sft_output
+2025-03-01 06:22:00,770 - __main__ - INFO - Loading model from GSAI-ML/LLaDA-8B-Instruct...
+2025-03-01 06:22:39,947 - __main__ - INFO - Model loaded in 39.18 seconds
+2025-03-01 06:22:39,947 - __main__ - INFO - === Model Information ===
+2025-03-01 06:22:39,948 - __main__ - INFO - Model type: LLaDAModelLM
+2025-03-01 06:22:39,948 - __main__ - INFO - Total parameters: 8,015,581,184
+2025-03-01 06:22:39,948 - __main__ - INFO - Trainable parameters: 8,015,581,184 (100.00%)
+2025-03-01 06:22:39,948 - __main__ - INFO - Model architecture:
+2025-03-01 06:22:39,948 - __main__ - INFO -   model: LLaDAModel
+2025-03-01 06:22:39,948 - __main__ - INFO - Loading dataset from sft_data/processed_conversations.pt...
+2025-03-01 06:22:39,948 - __main__ - INFO - Loading dataset from sft_data/processed_conversations.pt
+2025-03-01 06:22:39,952 - __main__ - INFO - Dataset loaded in 0.00 seconds
+2025-03-01 06:22:39,952 - __main__ - ERROR - Error loading dataset: 'int' object has no attribute 'item'
+2025-03-01 06:22:39,953 - __main__ - ERROR - Traceback (most recent call last):
+  File "/Users/dylannguyen/Documents/Mercor Hackathon Feb '25/LLaDA-main/finetune_llada.py", line 409, in main
+    dataset = SFTDataset(args.data_path)
+  File "/Users/dylannguyen/Documents/Mercor Hackathon Feb '25/LLaDA-main/finetune_llada.py", line 35, in __init__
+    prompt_lengths = [item["prompt_length"].item() for item in self.data]
+  File "/Users/dylannguyen/Documents/Mercor Hackathon Feb '25/LLaDA-main/finetune_llada.py", line 35, in <listcomp>
+    prompt_lengths = [item["prompt_length"].item() for item in self.data]
+AttributeError: 'int' object has no attribute 'item'
+
+2025-03-01 06:23:48,996 - __main__ - INFO - === Training Arguments ===
+2025-03-01 06:23:48,996 - __main__ - INFO - data_path: sft_data/processed_conversations.pt
+2025-03-01 06:23:48,996 - __main__ - INFO - model_name: GSAI-ML/LLaDA-8B-Instruct
+2025-03-01 06:23:48,996 - __main__ - INFO - output_dir: sft_output
+2025-03-01 06:23:48,996 - __main__ - INFO - batch_size: 2
+2025-03-01 06:23:48,996 - __main__ - INFO - learning_rate: 2.5e-05
+2025-03-01 06:23:48,996 - __main__ - INFO - weight_decay: 0.1
+2025-03-01 06:23:48,996 - __main__ - INFO - epochs: 3
+2025-03-01 06:23:48,996 - __main__ - INFO - warmup_steps: 50
+2025-03-01 06:23:48,996 - __main__ - INFO - save_steps: 500
+2025-03-01 06:23:48,996 - __main__ - INFO - local_rank: -1
+2025-03-01 06:23:48,996 - __main__ - INFO - log_level: INFO
+2025-03-01 06:23:48,996 - __main__ - INFO - gradient_accumulation_steps: 1
+2025-03-01 06:23:48,996 - __main__ - INFO - max_grad_norm: 1.0
+2025-03-01 06:23:48,996 - __main__ - INFO - === System Information ===
+2025-03-01 06:23:48,996 - __main__ - INFO - PyTorch version: 2.6.0
+2025-03-01 06:23:48,996 - __main__ - INFO - CUDA available: No
+2025-03-01 06:23:48,996 - __main__ - INFO - Python version: 3.9.6
+2025-03-01 06:23:48,996 - __main__ - INFO - OS: Darwin 23.4.0
+2025-03-01 06:23:48,996 - __main__ - INFO - psutil not available for detailed CPU/RAM info
+2025-03-01 06:23:48,996 - __main__ - INFO - === End System Information ===
+2025-03-01 06:23:48,996 - __main__ - INFO - Using device: cpu
+2025-03-01 06:23:48,996 - __main__ - INFO - Output directory: sft_output
+2025-03-01 06:23:48,996 - __main__ - INFO - Loading model from GSAI-ML/LLaDA-8B-Instruct...
+2025-03-01 06:24:19,013 - __main__ - INFO - Model loaded in 30.02 seconds
+2025-03-01 06:24:19,014 - __main__ - INFO - === Model Information ===
+2025-03-01 06:24:19,014 - __main__ - INFO - Model type: LLaDAModelLM
+2025-03-01 06:24:19,014 - __main__ - INFO - Total parameters: 8,015,581,184
+2025-03-01 06:24:19,014 - __main__ - INFO - Trainable parameters: 8,015,581,184 (100.00%)
+2025-03-01 06:24:19,014 - __main__ - INFO - Model architecture:
+2025-03-01 06:24:19,014 - __main__ - INFO -   model: LLaDAModel
+2025-03-01 06:24:19,015 - __main__ - INFO - Loading dataset from sft_data/processed_conversations.pt...
+2025-03-01 06:24:19,015 - __main__ - INFO - Loading dataset from sft_data/processed_conversations.pt
+2025-03-01 06:24:19,018 - __main__ - INFO - Dataset loaded in 0.00 seconds
+2025-03-01 06:24:19,018 - __main__ - INFO - Dataset size: 10 examples
+2025-03-01 06:24:19,018 - __main__ - INFO - Sequence length stats: min=27, max=350, avg=163.60
+2025-03-01 06:24:19,018 - __main__ - INFO - Prompt length stats: min=19, max=24, avg=21.40
+2025-03-01 06:24:19,018 - __main__ - INFO - Dataset loaded in 0.00 seconds
+2025-03-01 06:24:19,019 - __main__ - INFO - Created DataLoader with 5 batches
+2025-03-01 06:24:19,019 - __main__ - INFO - Setting up optimizer and scheduler...
+2025-03-01 06:24:19,551 - __main__ - INFO - Optimizer: AdamW with lr=2.5e-05, weight_decay=0.1
+2025-03-01 06:24:19,552 - __main__ - INFO - Scheduler: Linear warmup (50 steps) and decay over 15 total steps
+2025-03-01 06:24:19,552 - __main__ - INFO - === Starting Training ===
+2025-03-01 06:24:19,552 - __main__ - INFO - Starting epoch 1/3
+2025-03-01 06:24:19,555 - __main__ - INFO - Epoch 1 - Processing batch 1/5
+2025-03-01 06:24:19,555 - __main__ - INFO - Batch shape: batch_size=2, seq_length=350

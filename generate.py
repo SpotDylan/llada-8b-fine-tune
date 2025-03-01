@@ -40,7 +40,7 @@ def get_num_transfer_tokens(mask_index, steps):
 
 @ torch.no_grad()
 def generate(model, prompt, steps=128, gen_length=128, block_length=128, temperature=0.,
-             cfg_scale=0., remasking='low_confidence', mask_id=126336):
+             cfg_scale=0., remasking='low_confidence', mask_id=126336, print_logits=False, tokenizer=None):
     '''
     Args:
         model: Mask predictor.
@@ -79,6 +79,20 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
             else:
                 logits = model(x).logits
 
+            # Print logits if requested
+            if print_logits:
+                print(f"Block {num_block+1}/{num_blocks}, Step {i+1}/{steps}")
+                # Print top 5 logits for the first masked token
+                if mask_index.any():
+                    first_masked_pos = mask_index[0].nonzero()[0].item()
+                    token_logits = logits[0, first_masked_pos]
+                    top_values, top_indices = torch.topk(token_logits, 5)
+                    print("Top 5 logits for first masked token:")
+                    for j, (value, idx) in enumerate(zip(top_values.tolist(), top_indices.tolist())):
+                        token = tokenizer.decode([idx]) if tokenizer else f"<Token ID: {idx}>"
+                        print(f"  {j+1}. Token: '{token}', ID: {idx}, Logit: {value:.4f}")
+                    print()
+            
             logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
             x0 = torch.argmax(logits_with_noise, dim=-1) # b, l
 
@@ -120,7 +134,7 @@ def main():
     input_ids = tokenizer(prompt)['input_ids']
     input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
 
-    out = generate(model, input_ids, steps=128, gen_length=128, block_length=32, temperature=0., cfg_scale=0., remasking='low_confidence')
+    out = generate(model, input_ids, steps=128, gen_length=128, block_length=32, temperature=0., cfg_scale=0., remasking='low_confidence', tokenizer=tokenizer)
     print(tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0])
 
 
