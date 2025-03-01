@@ -6,8 +6,8 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModel, AutoTokenizer, get_linear_schedule_with_warmup
 from tqdm import tqdm
 
-os.environ[‘HF_HOME’] = ‘/mount/model-cache'
-os.environ[‘HF_HUB_CACHE’] = ‘/mount/model-cache’
+os.environ["HF_HOME"] = "/mount/model-cache"
+os.environ["HF_HUB_CACHE"] = "/mount/model-cache"
 
 class SFTDataset(Dataset):
     def __init__(self, data_path):
