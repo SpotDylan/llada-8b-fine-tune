@@ -53,7 +53,8 @@ python finetune_llada.py \
     --weight_decay $WEIGHT_DECAY \
     --num_epochs $NUM_EPOCHS \
     --warmup_ratio $WARMUP_RATIO \
-    --seed $SEED
+    --seed $SEED \
+    --num_gpus 4  # Use 4 GPUs for distributed training
 
 # Step 3: Run an example inference
 echo "Step 3: Running example inference..."

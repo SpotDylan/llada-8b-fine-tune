@@ -10,7 +10,11 @@ import os
 import argparse
 import torch
 import torch.nn.functional as F
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoModel, AutoTokenizer, get_linear_schedule_with_warmup
 from tqdm import tqdm
 import logging
@@ -234,34 +238,78 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-def main():
-    """Main function for fine-tuning LLaDA."""
-    args = parse_args()
+def setup(rank, world_size):
+    """
+    Initialize the distributed environment.
+    
+    Args:
+        rank: Rank of the current process.
+        world_size: Number of processes.
+    """
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    
+    # Initialize the process group
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
+def cleanup():
+    """Cleanup the distributed environment."""
+    dist.destroy_process_group()
+
+def train_model(rank, world_size, args):
+    """
+    Train the model on a single GPU.
+    
+    Args:
+        rank: Rank of the current process.
+        world_size: Number of processes.
+        args: Training arguments.
+    """
+    # Setup the distributed environment
+    setup(rank, world_size)
     
     # Set random seed
-    set_seed(args.seed)
+    set_seed(args.seed + rank)  # Different seed for each process
     
     # Setup device
-    args.device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+    args.device = torch.device(f"cuda:{rank}")
+    torch.cuda.set_device(args.device)
     
     # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
+    if rank == 0:
+        os.makedirs(args.output_dir, exist_ok=True)
     
     # Load tokenizer and model
-    logger.info(f"Loading tokenizer and model from {args.model_name_or_path}")
+    if rank == 0:
+        logger.info(f"Loading tokenizer and model from {args.model_name_or_path}")
+    
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=True)
     model = AutoModel.from_pretrained(args.model_name_or_path, trust_remote_code=True)
     model.to(args.device)
     
+    # Wrap model with DDP
+    model = DDP(model, device_ids=[rank])
+    
     # Load dataset
-    logger.info(f"Loading dataset from {args.data_path}")
+    if rank == 0:
+        logger.info(f"Loading dataset from {args.data_path}")
+    
     dataset = SFTDataset(args.data_path)
+    
+    # Create distributed sampler
+    sampler = DistributedSampler(
+        dataset,
+        num_replicas=world_size,
+        rank=rank,
+        shuffle=True,
+        seed=args.seed
+    )
     
     # Create data loader
     train_dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
-        shuffle=True,
+        sampler=sampler,
         collate_fn=lambda batch: collate_fn(batch, tokenizer.pad_token_id)
     )
     
@@ -282,24 +330,60 @@ def main():
     )
     
     # Train the model
-    logger.info("Starting training")
+    if rank == 0:
+        logger.info("Starting training")
+    
     for epoch in range(args.num_epochs):
-        logger.info(f"Epoch {epoch + 1}/{args.num_epochs}")
-        avg_loss = train(args, model, tokenizer, train_dataloader, optimizer, scheduler)
-        logger.info(f"Average loss: {avg_loss:.4f}")
+        # Set the epoch for the sampler
+        sampler.set_epoch(epoch)
         
-        # Save model checkpoint
-        checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-epoch-{epoch + 1}")
-        os.makedirs(checkpoint_dir, exist_ok=True)
-        model.save_pretrained(checkpoint_dir)
-        tokenizer.save_pretrained(checkpoint_dir)
-        logger.info(f"Saved model checkpoint to {checkpoint_dir}")
+        if rank == 0:
+            logger.info(f"Epoch {epoch + 1}/{args.num_epochs}")
+        
+        avg_loss = train(args, model, tokenizer, train_dataloader, optimizer, scheduler)
+        
+        if rank == 0:
+            logger.info(f"Average loss: {avg_loss:.4f}")
+            
+            # Save model checkpoint
+            checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-epoch-{epoch + 1}")
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            
+            # Save the model (unwrap DDP)
+            model_to_save = model.module
+            model_to_save.save_pretrained(checkpoint_dir)
+            tokenizer.save_pretrained(checkpoint_dir)
+            logger.info(f"Saved model checkpoint to {checkpoint_dir}")
     
     # Save final model
-    logger.info("Saving final model")
-    model.save_pretrained(args.output_dir)
-    tokenizer.save_pretrained(args.output_dir)
-    logger.info(f"Saved final model to {args.output_dir}")
+    if rank == 0:
+        logger.info("Saving final model")
+        model_to_save = model.module
+        model_to_save.save_pretrained(args.output_dir)
+        tokenizer.save_pretrained(args.output_dir)
+        logger.info(f"Saved final model to {args.output_dir}")
+    
+    # Cleanup
+    cleanup()
+
+def main():
+    """Main function for fine-tuning LLaDA."""
+    args = parse_args()
+    
+    # Add distributed training arguments
+    parser = argparse.ArgumentParser(description="Distributed training arguments")
+    parser.add_argument("--num_gpus", type=int, default=4,
+                        help="Number of GPUs to use for distributed training")
+    distributed_args, _ = parser.parse_known_args()
+    
+    # Launch the distributed training
+    world_size = distributed_args.num_gpus
+    mp.spawn(
+        train_model,
+        args=(world_size, args),
+        nprocs=world_size,
+        join=True
+    )
 
 if __name__ == "__main__":
     main()
