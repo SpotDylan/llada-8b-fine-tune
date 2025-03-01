@@ -21,8 +21,24 @@ from transformers import (
     TrainerCallback,
 )
 from tqdm import tqdm
-from setfit import TrainingArguments, Trainer
+from setfit import TrainingArguments, Trainer, utils
 from datasets import Dataset as HFDataset
+import numpy as np
+
+def llada_metric(y_pred, y_test):
+    """
+    Custom metric function for LLaDA model evaluation.
+    
+    Args:
+        y_pred: Predictions from the model (loss values)
+        y_test: Ground truth (not used in this metric)
+        
+    Returns:
+        Dictionary with metric values
+    """
+    # Use the average loss as the metric
+    avg_loss = np.mean(y_pred)
+    return {"embedding_loss": avg_loss}
 
 class SFTDataset(Dataset):
     """Dataset for LLaDA supervised fine-tuning."""
@@ -302,8 +318,35 @@ def finetune(args):
         print(f"Loading dataset from {args.data}")
     dataset = SFTDataset(args.data)
     
-    # Convert to Hugging Face dataset
+    # Convert to Hugging Face dataset and create a small evaluation split
     hf_dataset = convert_to_hf_dataset(dataset)
+    
+    # Create a small evaluation dataset (10% of the training data)
+    dataset_size = len(hf_dataset)
+    eval_size = max(1, int(dataset_size * 0.1))  # At least 1 example
+    
+    # Split the dataset
+    indices = list(range(dataset_size))
+    if is_main_process:  # Only shuffle on main process to ensure same split across processes
+        import random
+        random.seed(args.seed)
+        random.shuffle(indices)
+    
+    if args.distributed:
+        # Broadcast indices from rank 0 to all other processes
+        indices_tensor = torch.tensor(indices, device=device)
+        dist.broadcast(indices_tensor, src=0)
+        indices = indices_tensor.cpu().tolist()
+    
+    train_indices = indices[eval_size:]
+    eval_indices = indices[:eval_size]
+    
+    train_dataset = hf_dataset.select(train_indices)
+    eval_dataset = hf_dataset.select(eval_indices)
+    
+    if is_main_process:
+        print(f"Training dataset size: {len(train_dataset)}")
+        print(f"Evaluation dataset size: {len(eval_dataset)}")
     
     # Create model
     if is_main_process:
@@ -328,6 +371,8 @@ def finetune(args):
         save_strategy="steps",
         save_steps=500,
         save_total_limit=1,
+        eval_strategy="steps",  # Match save_strategy
+        eval_steps=500,  # Match save_steps
         load_best_model_at_end=True,
         metric_for_best_model="embedding_loss",
         greater_is_better=False,
@@ -340,8 +385,10 @@ def finetune(args):
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=hf_dataset,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         callbacks=[forward_callback],
+        metric=llada_metric,  # Use custom metric function
     )
     
     # Train model
@@ -401,8 +448,34 @@ def finetune_distributed(rank, world_size, args):
         print(f"Loading dataset from {args.data}")
     dataset = SFTDataset(args.data)
     
-    # Convert to Hugging Face dataset
+    # Convert to Hugging Face dataset and create a small evaluation split
     hf_dataset = convert_to_hf_dataset(dataset)
+    
+    # Create a small evaluation dataset (10% of the training data)
+    dataset_size = len(hf_dataset)
+    eval_size = max(1, int(dataset_size * 0.1))  # At least 1 example
+    
+    # Split the dataset
+    indices = list(range(dataset_size))
+    if rank == 0:  # Only shuffle on rank 0 to ensure same split across processes
+        import random
+        random.seed(args.seed)
+        random.shuffle(indices)
+    
+    # Broadcast indices from rank 0 to all other processes
+    indices_tensor = torch.tensor(indices, device=device)
+    dist.broadcast(indices_tensor, src=0)
+    indices = indices_tensor.cpu().tolist()
+    
+    train_indices = indices[eval_size:]
+    eval_indices = indices[:eval_size]
+    
+    train_dataset = hf_dataset.select(train_indices)
+    eval_dataset = hf_dataset.select(eval_indices)
+    
+    if rank == 0:
+        print(f"Training dataset size: {len(train_dataset)}")
+        print(f"Evaluation dataset size: {len(eval_dataset)}")
     
     # Create model
     if rank == 0:
@@ -426,6 +499,8 @@ def finetune_distributed(rank, world_size, args):
         save_strategy="steps",
         save_steps=500,
         save_total_limit=1,
+        eval_strategy="steps",  # Match save_strategy
+        eval_steps=500,  # Match save_steps
         load_best_model_at_end=True,
         metric_for_best_model="embedding_loss",
         greater_is_better=False,
@@ -438,8 +513,10 @@ def finetune_distributed(rank, world_size, args):
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=hf_dataset,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         callbacks=[forward_callback],
+        metric=llada_metric,  # Use custom metric function
     )
     
     # Train model
