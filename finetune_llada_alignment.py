@@ -245,6 +245,21 @@ def train_epoch(model, dataloader, optimizer, scheduler, tokenizer, device, epoc
             llada_probs = F.softmax(llada_logits / temperature, dim=-1)
             llama_probs = F.softmax(llama_logits_masked / temperature, dim=-1)
             
+            # Check for vocabulary size mismatch and handle it
+            llada_vocab_size = llada_logits.size(-1)
+            llama_vocab_size = llama_probs.size(-1)
+            
+            if llada_vocab_size != llama_vocab_size:
+                logger.info(f"Vocabulary size mismatch detected: LLaDA={llada_vocab_size}, LLaMA={llama_vocab_size}")
+                
+                # Option 1: Truncate the larger vocabulary to match the smaller one
+                if llada_vocab_size < llama_vocab_size:
+                    logger.info(f"Truncating LLaMA probabilities from {llama_vocab_size} to {llada_vocab_size}")
+                    llama_probs = llama_probs[:, :llada_vocab_size]
+                else:
+                    logger.info(f"Truncating LLaDA logits from {llada_vocab_size} to {llama_vocab_size}")
+                    llada_logits = llada_logits[:, :llama_vocab_size]
+            
             # Calculate KL divergence loss
             kl_loss_per_token = F.kl_div(
                 F.log_softmax(llada_logits / temperature, dim=-1),

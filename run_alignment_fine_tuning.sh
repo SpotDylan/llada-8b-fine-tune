@@ -16,6 +16,7 @@ WARMUP_STEPS=50
 MAX_LENGTH=256
 TEMPERATURE=1.0
 LOG_INTERVAL=100
+TARGET_VOCAB_SIZE=126349  # Set to the smaller vocabulary size (LLaDA's vocab size)
 
 # Create directories
 mkdir -p alignment_data
@@ -37,7 +38,8 @@ python preprocess_alignment_data.py \
     --input_file $INPUT_FILE \
     --output_file $PROCESSED_FILE \
     --model_name $MODEL_NAME \
-    --max_length $MAX_LENGTH
+    --max_length $MAX_LENGTH \
+    --target_vocab_size $TARGET_VOCAB_SIZE
 
 # Check if preprocessing was successful
 if [ ! -f "$PROCESSED_FILE" ]; then
