@@ -178,6 +178,11 @@ def train(args):
                         allocated_memory = torch.cuda.memory_allocated(device) / (1024 ** 3)  # GB
                         reserved_memory = torch.cuda.memory_reserved(device) / (1024 ** 3)  # GB
                         logger.info(f"GPU Memory before forward pass - Allocated: {allocated_memory:.2f} GB, Reserved: {reserved_memory:.2f} GB")
+                        
+                        # Log detailed memory summary periodically
+                        if batch_idx % args.log_steps == 0:
+                            memory_summary = torch.cuda.memory_summary(device=device, abbreviated=False)
+                            logger.info(f"Detailed GPU Memory Summary before forward pass:\n{memory_summary}")
                     
                     # Apply forward process to get noisy batch
                     noisy_batch, _, p_mask = forward_process(input_ids)
