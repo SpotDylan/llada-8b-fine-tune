@@ -7,7 +7,7 @@
 set -e
 
 # Configuration
-MODEL_NAME_OR_PATH="llada-8b"  # Path to the LLaDA model or model name
+MODEL_NAME_OR_PATH="GSAI-ML/LLaDA-8B-Instruct"  # Path to the LLaDA model or model name
 INPUT_FILE="sft_data/conversations.json"
 OUTPUT_DIR="models/llada-sft"
 PROCESSED_DATA_DIR="sft_data/processed"
