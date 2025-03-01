@@ -6,7 +6,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # Set variables
 MODEL_NAME="GSAI-ML/LLaDA-8B-Base"  # Change to your model name/path
 OUTPUT_DIR="sft_output"
-BATCH_SIZE=4  # Adjust based on your GPU memory
+BATCH_SIZE=1  # Adjust based on your GPU memory
 LEARNING_RATE=2.5e-5
 NUM_EPOCHS=3
 SAVE_STEPS=500
