@@ -18,6 +18,8 @@ from transformers import (
 )
 from tqdm import tqdm
 
+os.environ['HF_HOME'] = '/mount/model-cache'
+
 class SFTDataset(Dataset):
     """Dataset for LLaDA supervised fine-tuning."""
     
