@@ -2,5 +2,3 @@ torch>=2.0.0
 transformers==4.38.2
 tqdm>=4.65.0
 numpy>=1.24.0
-setfit>=1.0.0
-sentence-transformers>=2.2.2

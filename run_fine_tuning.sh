@@ -1,102 +1,44 @@
 #!/bin/bash
 
-# Run Fine-Tuning Pipeline for LLaDA
-# This script runs the entire supervised fine-tuning workflow for LLaDA
+# Enable memory optimization to avoid fragmentation
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Set variables
-NUM_EXAMPLES=500
-MULTI_TURN_RATIO=0.3
-MAX_LENGTH=2048
+MODEL_NAME="GSAI-ML/LLaDA-8B-Base"  # Change to your model name/path
+OUTPUT_DIR="sft_output"
+BATCH_SIZE=1  # Adjust based on your GPU memory
+LEARNING_RATE=2.5e-5
 NUM_EPOCHS=3
-BATCH_SIZE=4
-GRADIENT_ACCUMULATION_STEPS=4
-LEARNING_RATE=2e-5
-WARMUP_RATIO=0.1
-MAX_MEMORY_GB=70
-STEPS=128
-GEN_LENGTH=128
-BLOCK_LENGTH=32
+SAVE_STEPS=500
+MEMORY_LIMIT=65.0  # Memory limit in GB across all GPUs
 
-# Create directories
-mkdir -p sft_data/preprocessed
-mkdir -p sft_output
+# Create output directory
+mkdir -p $OUTPUT_DIR
 
-# Print header
-echo "========================================================"
-echo "LLaDA Supervised Fine-Tuning Pipeline"
-echo "========================================================"
-echo ""
+echo "===== Step 1: Preprocessing SFT data ====="
+python preprocess_sft_data.py
 
-# Step 1: Preprocess the dataset
-echo "Step 1: Preprocessing the dataset..."
-python3 preprocess_sft_data.py \
-    --input sft_data/transformed_conversations.json \
-    --output_dir sft_data/preprocessed \
-    --tokenizer GSAI-ML/LLaDA-8B-Base \
-    --max_length $MAX_LENGTH
-
-if [ $? -ne 0 ]; then
-    echo "Error preprocessing dataset. Exiting."
-    exit 1
-fi
-echo "Dataset preprocessed successfully."
-echo ""
-
-# Step 2: Fine-tune the model
-echo "Step 2: Fine-tuning the model..."
-echo "This step may take a long time depending on your hardware."
-echo "Using SetFit trainer with distributed training across 8 GPUs."
-python3 finetune_llada.py \
-    --data sft_data/preprocessed/preprocessed_data.pt \
-    --tokenizer sft_data/preprocessed/tokenizer \
-    --model GSAI-ML/LLaDA-8B-Base \
-    --output_dir sft_output \
-    --num_epochs $NUM_EPOCHS \
+echo "===== Step 2: Fine-tuning LLaDA with Distributed Training ====="
+echo "Using up to 8 GPUs with memory limit of $MEMORY_LIMIT GB"
+python finetune_llada.py \
+    --model_name $MODEL_NAME \
+    --data_path "sft_data/processed_data.pt" \
+    --output_dir $OUTPUT_DIR \
     --batch_size $BATCH_SIZE \
-    --gradient_accumulation_steps $GRADIENT_ACCUMULATION_STEPS \
     --learning_rate $LEARNING_RATE \
-    --warmup_ratio $WARMUP_RATIO \
-    --max_memory_gb $MAX_MEMORY_GB \
-    --use_bf16 \
-    --distributed \
-    --num_gpus 8
+    --num_epochs $NUM_EPOCHS \
+    --save_steps $SAVE_STEPS \
+    --memory_limit $MEMORY_LIMIT
 
-if [ $? -ne 0 ]; then
-    echo "Error fine-tuning model. Exiting."
-    exit 1
-fi
-echo "Model fine-tuned successfully."
-echo ""
+echo "===== Step 3: Testing fine-tuned model ====="
+python inference_example.py \
+    --model_path "$OUTPUT_DIR/final" \
+    --steps 128 \
+    --gen_length 128 \
+    --block_length 32 \
+    --temperature 0.0 \
+    --cfg_scale 0.0 \
+    --remasking "low_confidence" \
+    --gpu_id 0  # Use first GPU for inference
 
-# Step 3: Run inference examples
-echo "Step 3: Running inference examples..."
-python3 inference_example.py \
-    --model sft_output/final_model \
-    --tokenizer sft_data/preprocessed/tokenizer \
-    --mode examples \
-    --steps $STEPS \
-    --gen_length $GEN_LENGTH \
-    --block_length $BLOCK_LENGTH \
-    --use_bf16
-
-if [ $? -ne 0 ]; then
-    echo "Error running inference examples. Exiting."
-    exit 1
-fi
-echo "Inference examples completed successfully."
-echo ""
-
-# Print completion message
-echo "========================================================"
-echo "LLaDA Supervised Fine-Tuning Pipeline Completed"
-echo "========================================================"
-echo ""
-echo "The fine-tuned model is saved in: sft_output/final_model"
-echo "The best model (based on training loss) is saved in: sft_output/best_model"
-echo ""
-echo "To run interactive chat with the fine-tuned model, use:"
-echo "python3 inference_example.py --model sft_output/final_model --tokenizer sft_data/preprocessed/tokenizer --mode interactive"
-echo ""
-echo "To run inference examples with the fine-tuned model, use:"
-echo "python3 inference_example.py --model sft_output/final_model --tokenizer sft_data/preprocessed/tokenizer --mode examples"
-echo ""
+echo "===== Fine-tuning pipeline completed ====="
