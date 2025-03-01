@@ -64,9 +64,21 @@ def forward_process(input_ids, eps=1e-3):
     return noisy_batch, masked_indices, p_mask
 
 def train(args):
-    # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    # Check available GPUs and set device
+    if torch.cuda.is_available():
+        num_gpus = torch.cuda.device_count()
+        print(f"Number of available GPUs: {num_gpus}")
+        
+        if args.gpu_id >= 0 and args.gpu_id < num_gpus:
+            device = torch.device(f"cuda:{args.gpu_id}")
+            print(f"Using device: {device}")
+        else:
+            print(f"Specified GPU ID {args.gpu_id} is not available. Available GPUs: {num_gpus}")
+            print(f"Defaulting to CPU")
+            device = torch.device("cpu")
+    else:
+        print("CUDA is not available. Using CPU")
+        device = torch.device("cpu")
     
     # Load model and tokenizer
     print(f"Loading model: {args.model_name}")
@@ -173,6 +185,7 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=2.5e-5, help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=3, help="Number of epochs")
     parser.add_argument("--save_steps", type=int, default=500, help="Save checkpoint every X steps")
+    parser.add_argument("--gpu_id", type=int, default=0, help="GPU ID to use (default: 0)")
     
     args = parser.parse_args()
     

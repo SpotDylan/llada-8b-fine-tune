@@ -113,12 +113,25 @@ def main():
     parser.add_argument("--cfg_scale", type=float, default=0.0, help="Classifier-free guidance scale")
     parser.add_argument("--remasking", type=str, default="low_confidence", choices=["low_confidence", "random"], 
                         help="Remasking strategy")
+    parser.add_argument("--gpu_id", type=int, default=0, help="GPU ID to use (default: 0)")
     
     args = parser.parse_args()
     
-    # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    # Check available GPUs and set device
+    if torch.cuda.is_available():
+        num_gpus = torch.cuda.device_count()
+        print(f"Number of available GPUs: {num_gpus}")
+        
+        if args.gpu_id >= 0 and args.gpu_id < num_gpus:
+            device = torch.device(f"cuda:{args.gpu_id}")
+            print(f"Using device: {device}")
+        else:
+            print(f"Specified GPU ID {args.gpu_id} is not available. Available GPUs: {num_gpus}")
+            print(f"Defaulting to CPU")
+            device = torch.device("cpu")
+    else:
+        print("CUDA is not available. Using CPU")
+        device = torch.device("cpu")
     
     # Load model and tokenizer
     print(f"Loading model from {args.model_path}")

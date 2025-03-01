@@ -7,6 +7,7 @@ BATCH_SIZE=4  # Adjust based on your GPU memory
 LEARNING_RATE=2.5e-5
 NUM_EPOCHS=3
 SAVE_STEPS=500
+GPU_ID=0  # Set to the GPU ID you want to use (default: 0)
 
 # Create output directory
 mkdir -p $OUTPUT_DIR
@@ -22,7 +23,8 @@ python finetune_llada.py \
     --batch_size $BATCH_SIZE \
     --learning_rate $LEARNING_RATE \
     --num_epochs $NUM_EPOCHS \
-    --save_steps $SAVE_STEPS
+    --save_steps $SAVE_STEPS \
+    --gpu_id $GPU_ID
 
 echo "===== Step 3: Testing fine-tuned model ====="
 python inference_example.py \
@@ -32,6 +34,7 @@ python inference_example.py \
     --block_length 32 \
     --temperature 0.0 \
     --cfg_scale 0.0 \
-    --remasking "low_confidence"
+    --remasking "low_confidence" \
+    --gpu_id $GPU_ID
 
 echo "===== Fine-tuning pipeline completed ====="
