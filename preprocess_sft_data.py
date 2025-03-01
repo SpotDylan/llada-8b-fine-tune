@@ -19,7 +19,17 @@ def preprocess_conversation(conversation: Dict[str, Any], tokenizer, max_length:
         A tuple of (input_ids, prompt_length, total_length)
     """
     # Extract the conversation turns
-    turns = conversation["conversations"]
+    # Handle both old and new format
+    if "conversations" in conversation:
+        # Old format
+        turns = conversation["conversations"]
+        user_role, assistant_role = "human", "gpt"
+        content_key = "value"
+    else:
+        # New format (list of messages)
+        turns = conversation
+        user_role, assistant_role = "user", "assistant"
+        content_key = "content"
     
     # Format the conversation as a prompt-response pair
     formatted_text = ""
@@ -27,8 +37,8 @@ def preprocess_conversation(conversation: Dict[str, Any], tokenizer, max_length:
     # Process each turn in the conversation
     for i in range(0, len(turns), 2):
         if i + 1 < len(turns):  # Make sure we have a response
-            user_msg = turns[i]["value"]
-            assistant_msg = turns[i + 1]["value"]
+            user_msg = turns[i][content_key]
+            assistant_msg = turns[i + 1][content_key]
             
             # Format according to LLaDA guidelines
             formatted_text += f"<start_id>user<end_id>\n{user_msg}<eot_id><start_id>assistant<end_id>\n{assistant_msg}"
@@ -43,8 +53,8 @@ def preprocess_conversation(conversation: Dict[str, Any], tokenizer, max_length:
     # Find the position of the first assistant token to determine prompt length
     prompt_text = ""
     for i in range(0, min(2, len(turns))):
-        if turns[i]["from"] == "human":
-            prompt_text += f"<start_id>user<end_id>\n{turns[i]['value']}<eot_id>"
+        if turns[i].get("role", turns[i].get("from")) == user_role:
+            prompt_text += f"<start_id>user<end_id>\n{turns[i][content_key]}<eot_id>"
     
     tokenized_prompt = tokenizer(prompt_text, return_tensors="pt")
     prompt_length = tokenized_prompt["input_ids"].shape[1]
@@ -93,7 +103,17 @@ def preprocess_dataset(input_file: str, output_dir: str, tokenizer_name: str = "
     # Load the dataset
     print(f"Loading dataset from {input_file}")
     with open(input_file, "r") as f:
-        dataset = json.load(f)
+        data = json.load(f)
+    
+    # Handle both old and new format
+    if isinstance(data, list):
+        # Old format: list of conversation objects
+        dataset = data
+    elif "messages" in data:
+        # New format: object with "messages" array
+        dataset = data["messages"]
+    else:
+        raise ValueError(f"Unrecognized data format in {input_file}")
     
     # Preprocess each conversation
     preprocessed_data = []
@@ -102,11 +122,16 @@ def preprocess_dataset(input_file: str, output_dir: str, tokenizer_name: str = "
         try:
             input_ids, prompt_length, total_length = preprocess_conversation(conversation, tokenizer, max_length)
             
+            # For category, use "unknown" as default since new format doesn't have categories
+            category = "unknown"
+            if isinstance(conversation, dict) and "category" in conversation:
+                category = conversation["category"]
+            
             preprocessed_data.append({
                 "input_ids": input_ids,
                 "prompt_length": prompt_length,
                 "total_length": total_length,
-                "category": conversation.get("category", "unknown")
+                "category": category
             })
         except Exception as e:
             print(f"Error preprocessing conversation: {e}")
@@ -126,7 +151,7 @@ def preprocess_dataset(input_file: str, output_dir: str, tokenizer_name: str = "
 
 def main():
     parser = argparse.ArgumentParser(description="Preprocess conversation data for LLaDA SFT")
-    parser.add_argument("--input", type=str, default="sft_data/conversations.json", help="Input JSON file")
+    parser.add_argument("--input", type=str, default="sft_data/transformed_conversations.json", help="Input JSON file")
     parser.add_argument("--output_dir", type=str, default="sft_data/preprocessed", help="Output directory")
     parser.add_argument("--tokenizer", type=str, default="GSAI-ML/LLaDA-8B-Base", help="Tokenizer name or path")
     parser.add_argument("--max_length", type=int, default=2048, help="Maximum sequence length")

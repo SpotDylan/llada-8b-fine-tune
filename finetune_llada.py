@@ -3,6 +3,7 @@ import sys
 import time
 import math
 import argparse
+import gc
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union, Tuple, Callable
 
@@ -100,6 +101,77 @@ def forward_process(input_ids, mask_id=126336, eps=1e-3):
     noisy_batch = torch.where(masked_indices, mask_id, input_ids)
     
     return noisy_batch, masked_indices, p_mask
+
+def get_gpu_memory_usage(device=None):
+    """
+    Get the current GPU memory usage in GB.
+    
+    Args:
+        device: CUDA device to check
+        
+    Returns:
+        Memory usage in GB
+    """
+    if device is None:
+        device = torch.cuda.current_device()
+    
+    # Get memory usage in bytes and convert to GB
+    memory_allocated = torch.cuda.memory_allocated(device) / (1024 ** 3)
+    memory_reserved = torch.cuda.memory_reserved(device) / (1024 ** 3)
+    
+    return memory_allocated, memory_reserved
+
+class MemoryMonitorCallback(TrainerCallback):
+    """
+    Callback to monitor GPU memory usage during training and throttle if needed.
+    """
+    
+    def __init__(self, max_memory_gb=70, threshold=0.9):
+        """
+        Initialize the callback.
+        
+        Args:
+            max_memory_gb: Maximum allowed GPU memory usage in GB
+            threshold: Threshold ratio (0.0-1.0) of max_memory_gb to start throttling
+        """
+        self.max_memory_gb = max_memory_gb
+        self.threshold = threshold
+        self.throttle_factor = 1.0  # Start with no throttling
+        self.last_check_time = time.time()
+        self.check_interval = 10  # Check every 10 seconds
+    
+    def on_step_begin(self, args, state, control, **kwargs):
+        """
+        Check memory usage before each training step.
+        
+        Args:
+            args: Training arguments
+            state: Training state
+            control: Training control
+            kwargs: Additional arguments
+        """
+        # Only check memory periodically to avoid overhead
+        current_time = time.time()
+        if current_time - self.last_check_time < self.check_interval:
+            return
+        
+        self.last_check_time = current_time
+        
+        # Get current memory usage
+        memory_allocated, memory_reserved = get_gpu_memory_usage()
+        
+        # Calculate memory usage ratio
+        memory_ratio = memory_allocated / self.max_memory_gb
+        
+        # If memory usage is above threshold, throttle by cleaning cache
+        if memory_ratio > self.threshold:
+            # Try to free some memory
+            gc.collect()
+            torch.cuda.empty_cache()
+            
+            # Log memory usage
+            if hasattr(args, "local_rank") and args.local_rank == 0:
+                print(f"Memory usage high ({memory_allocated:.2f}/{self.max_memory_gb:.2f} GB), cleaning cache")
 
 class LLaDAForwardCallback(TrainerCallback):
     """
@@ -382,8 +454,9 @@ def finetune(args):
         greater_is_better=False,
     )
     
-    # Create callback for forward process
+    # Create callbacks
     forward_callback = LLaDAForwardCallback(mask_id=args.mask_id)
+    memory_callback = MemoryMonitorCallback(max_memory_gb=args.max_memory_gb)
     
     # Create trainer with column mapping
     column_mapping = {
@@ -397,7 +470,7 @@ def finetune(args):
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        callbacks=[forward_callback],
+        callbacks=[forward_callback, memory_callback],
         metric=llada_metric,  # Use custom metric function
         column_mapping=column_mapping,  # Specify column mapping
     )
@@ -517,8 +590,9 @@ def finetune_distributed(rank, world_size, args):
         greater_is_better=False,
     )
     
-    # Create callback for forward process
+    # Create callbacks
     forward_callback = LLaDAForwardCallback(mask_id=args.mask_id)
+    memory_callback = MemoryMonitorCallback(max_memory_gb=args.max_memory_gb)
     
     # Create trainer with column mapping
     column_mapping = {
@@ -532,7 +606,7 @@ def finetune_distributed(rank, world_size, args):
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        callbacks=[forward_callback],
+        callbacks=[forward_callback, memory_callback],
         metric=llada_metric,  # Use custom metric function
         column_mapping=column_mapping,  # Specify column mapping
     )
@@ -575,6 +649,7 @@ def main():
     parser.add_argument("--use_bf16", action="store_true", help="Use bfloat16 precision")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--max_memory_gb", type=float, default=70, help="Maximum GPU memory usage in GB")
     
     # Distributed training arguments
     parser.add_argument("--distributed", action="store_true", help="Use distributed training")

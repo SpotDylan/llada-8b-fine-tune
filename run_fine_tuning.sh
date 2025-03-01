@@ -12,6 +12,7 @@ BATCH_SIZE=4
 GRADIENT_ACCUMULATION_STEPS=4
 LEARNING_RATE=2e-5
 WARMUP_RATIO=0.1
+MAX_MEMORY_GB=70
 STEPS=128
 GEN_LENGTH=128
 BLOCK_LENGTH=32
@@ -26,24 +27,10 @@ echo "LLaDA Supervised Fine-Tuning Pipeline"
 echo "========================================================"
 echo ""
 
-# Step 1: Generate fake dataset
-echo "Step 1: Generating fake dataset..."
-python generate_fake_sft_data.py \
-    --num_examples $NUM_EXAMPLES \
-    --output sft_data/conversations.json \
-    --multi_turn_ratio $MULTI_TURN_RATIO
-
-if [ $? -ne 0 ]; then
-    echo "Error generating fake dataset. Exiting."
-    exit 1
-fi
-echo "Fake dataset generated successfully."
-echo ""
-
-# Step 2: Preprocess the dataset
-echo "Step 2: Preprocessing the dataset..."
-python preprocess_sft_data.py \
-    --input sft_data/conversations.json \
+# Step 1: Preprocess the dataset
+echo "Step 1: Preprocessing the dataset..."
+python3 preprocess_sft_data.py \
+    --input sft_data/transformed_conversations.json \
     --output_dir sft_data/preprocessed \
     --tokenizer GSAI-ML/LLaDA-8B-Base \
     --max_length $MAX_LENGTH
@@ -55,11 +42,11 @@ fi
 echo "Dataset preprocessed successfully."
 echo ""
 
-# Step 3: Fine-tune the model
-echo "Step 3: Fine-tuning the model..."
+# Step 2: Fine-tune the model
+echo "Step 2: Fine-tuning the model..."
 echo "This step may take a long time depending on your hardware."
 echo "Using SetFit trainer with distributed training across 8 GPUs."
-python finetune_llada.py \
+python3 finetune_llada.py \
     --data sft_data/preprocessed/preprocessed_data.pt \
     --tokenizer sft_data/preprocessed/tokenizer \
     --model GSAI-ML/LLaDA-8B-Base \
@@ -69,6 +56,7 @@ python finetune_llada.py \
     --gradient_accumulation_steps $GRADIENT_ACCUMULATION_STEPS \
     --learning_rate $LEARNING_RATE \
     --warmup_ratio $WARMUP_RATIO \
+    --max_memory_gb $MAX_MEMORY_GB \
     --use_bf16 \
     --distributed \
     --num_gpus 8
@@ -80,9 +68,9 @@ fi
 echo "Model fine-tuned successfully."
 echo ""
 
-# Step 4: Run inference examples
-echo "Step 4: Running inference examples..."
-python inference_example.py \
+# Step 3: Run inference examples
+echo "Step 3: Running inference examples..."
+python3 inference_example.py \
     --model sft_output/final_model \
     --tokenizer sft_data/preprocessed/tokenizer \
     --mode examples \
@@ -107,8 +95,8 @@ echo "The fine-tuned model is saved in: sft_output/final_model"
 echo "The best model (based on training loss) is saved in: sft_output/best_model"
 echo ""
 echo "To run interactive chat with the fine-tuned model, use:"
-echo "python inference_example.py --model sft_output/final_model --tokenizer sft_data/preprocessed/tokenizer --mode interactive"
+echo "python3 inference_example.py --model sft_output/final_model --tokenizer sft_data/preprocessed/tokenizer --mode interactive"
 echo ""
 echo "To run inference examples with the fine-tuned model, use:"
-echo "python inference_example.py --model sft_output/final_model --tokenizer sft_data/preprocessed/tokenizer --mode examples"
+echo "python3 inference_example.py --model sft_output/final_model --tokenizer sft_data/preprocessed/tokenizer --mode examples"
 echo ""
