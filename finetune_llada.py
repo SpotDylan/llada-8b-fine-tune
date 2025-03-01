@@ -8,7 +8,10 @@ from typing import Optional, Dict, Any, List
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from torch.optim import AdamW
 from transformers import (
     AutoTokenizer,
@@ -17,17 +20,6 @@ from transformers import (
     set_seed,
 )
 from tqdm import tqdm
-
-# Import FP8 related modules if available
-try:
-    import transformer_engine.pytorch as te
-    from transformer_engine.common import recipe
-    FP8_AVAILABLE = True
-except ImportError:
-    FP8_AVAILABLE = False
-    print("Warning: transformer_engine not found. FP8 precision will not be available.")
-
-os.environ['HF_HOME'] = '/mount/model-cache'
 
 class SFTDataset(Dataset):
     """Dataset for LLaDA supervised fine-tuning."""
@@ -177,7 +169,7 @@ def train_epoch(
     
     return total_loss / total_samples
 
-def save_checkpoint(model, optimizer, scheduler, epoch, loss, output_dir):
+def save_checkpoint(model, optimizer, scheduler, epoch, loss, output_dir, is_main_process=True):
     """
     Save a checkpoint of the model.
     
@@ -188,9 +180,19 @@ def save_checkpoint(model, optimizer, scheduler, epoch, loss, output_dir):
         epoch: Current epoch
         loss: Current loss
         output_dir: Directory to save the checkpoint
+        is_main_process: Whether this is the main process (rank 0)
     """
+    if not is_main_process:
+        return
+        
+    # If using DDP, get the underlying module
+    if isinstance(model, DDP):
+        model_to_save = model.module
+    else:
+        model_to_save = model
+        
     checkpoint = {
-        "model": model.state_dict(),
+        "model": model_to_save.state_dict(),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "epoch": epoch,
@@ -201,6 +203,176 @@ def save_checkpoint(model, optimizer, scheduler, epoch, loss, output_dir):
     torch.save(checkpoint, checkpoint_path)
     print(f"Saved checkpoint to {checkpoint_path}")
 
+def setup(rank, world_size, args):
+    """
+    Initialize the distributed environment.
+    
+    Args:
+        rank: Process rank
+        world_size: Number of processes
+        args: Command-line arguments
+    """
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = args.master_port
+    
+    # Initialize the process group
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    
+    # Set device for this process
+    torch.cuda.set_device(rank)
+    
+    # Set seed for reproducibility
+    set_seed(args.seed + rank)  # Different seed per process
+
+def cleanup():
+    """
+    Clean up the distributed environment.
+    """
+    dist.destroy_process_group()
+
+def finetune_distributed(rank, world_size, args):
+    """
+    Fine-tune the LLaDA model in a distributed setting.
+    
+    Args:
+        rank: Process rank
+        world_size: Number of processes
+        args: Command-line arguments
+    """
+    # Initialize the distributed environment
+    setup(rank, world_size, args)
+    
+    # Create output directory (only on main process)
+    if rank == 0:
+        os.makedirs(args.output_dir, exist_ok=True)
+        print(f"Using {world_size} GPUs for distributed training")
+    
+    # Set device
+    device = torch.device(f"cuda:{rank}")
+    
+    # Load tokenizer (same for all processes)
+    if rank == 0:
+        print(f"Loading tokenizer from {args.tokenizer}")
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
+    
+    # Load model
+    if rank == 0:
+        print(f"Loading model: {args.model}")
+    model = AutoModel.from_pretrained(
+        args.model,
+        trust_remote_code=True,
+        torch_dtype=torch.bfloat16 if args.use_bf16 else torch.float32,
+    )
+    model.to(device)
+    
+    # Wrap model with DDP
+    model = DDP(model, device_ids=[rank], output_device=rank, find_unused_parameters=False)
+    
+    # Load dataset
+    if rank == 0:
+        print(f"Loading dataset from {args.data}")
+    dataset = SFTDataset(args.data)
+    
+    # Create distributed sampler
+    sampler = DistributedSampler(
+        dataset, 
+        num_replicas=world_size, 
+        rank=rank,
+        shuffle=True,
+        seed=args.seed
+    )
+    
+    # Create dataloader with distributed sampler
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        sampler=sampler,  # Use sampler instead of shuffle
+        collate_fn=collate_fn,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
+    
+    # Set up optimizer
+    optimizer = AdamW(
+        model.parameters(),
+        lr=args.learning_rate,
+        weight_decay=args.weight_decay,
+        betas=(args.adam_beta1, args.adam_beta2),
+    )
+    
+    # Set up learning rate scheduler
+    # Adjust for distributed training
+    total_steps = len(dataloader) * args.num_epochs // args.gradient_accumulation_steps
+    warmup_steps = int(total_steps * args.warmup_ratio)
+    
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_steps,
+    )
+    
+    # Training loop
+    if rank == 0:
+        print(f"Starting training for {args.num_epochs} epochs")
+    best_loss = float("inf")
+    
+    for epoch in range(args.num_epochs):
+        # Set epoch for sampler
+        sampler.set_epoch(epoch)
+        
+        if rank == 0:
+            print(f"Epoch {epoch + 1}/{args.num_epochs}")
+        
+        # Train for one epoch
+        train_loss = train_epoch(
+            model,
+            dataloader,
+            optimizer,
+            scheduler,
+            device,
+            mask_id=args.mask_id,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            max_grad_norm=args.max_grad_norm,
+        )
+        
+        # Synchronize loss across all processes
+        dist.all_reduce(torch.tensor([train_loss]).to(device), op=dist.ReduceOp.SUM)
+        train_loss /= world_size
+        
+        if rank == 0:
+            print(f"Epoch {epoch + 1} completed. Loss: {train_loss:.4f}")
+        
+        # Save checkpoint (only on main process)
+        save_checkpoint(
+            model,
+            optimizer,
+            scheduler,
+            epoch + 1,
+            train_loss,
+            args.output_dir,
+            is_main_process=(rank == 0),
+        )
+        
+        # Save best model (only on main process)
+        if train_loss < best_loss and rank == 0:
+            best_loss = train_loss
+            if isinstance(model, DDP):
+                model.module.save_pretrained(os.path.join(args.output_dir, "best_model"))
+            else:
+                model.save_pretrained(os.path.join(args.output_dir, "best_model"))
+            print(f"Saved best model with loss: {best_loss:.4f}")
+    
+    # Save final model (only on main process)
+    if rank == 0:
+        if isinstance(model, DDP):
+            model.module.save_pretrained(os.path.join(args.output_dir, "final_model"))
+        else:
+            model.save_pretrained(os.path.join(args.output_dir, "final_model"))
+        print("Training completed!")
+    
+    # Clean up
+    cleanup()
+
 def finetune(args):
     """
     Fine-tune the LLaDA model.
@@ -208,6 +380,21 @@ def finetune(args):
     Args:
         args: Command-line arguments
     """
+    if args.distributed:
+        # Use all available GPUs or the specified number
+        world_size = min(torch.cuda.device_count(), args.num_gpus) if args.num_gpus > 0 else torch.cuda.device_count()
+        
+        if world_size > 1:
+            # Launch distributed processes
+            mp.spawn(
+                finetune_distributed,
+                args=(world_size, args),
+                nprocs=world_size,
+                join=True
+            )
+            return
+    
+    # Fall back to single-GPU or CPU training if distributed is disabled or only one GPU is available
     # Set random seed for reproducibility
     set_seed(args.seed)
     
@@ -229,50 +416,6 @@ def finetune(args):
         trust_remote_code=True,
         torch_dtype=torch.bfloat16 if args.use_bf16 else torch.float32,
     )
-    
-    # Apply FP8 precision if requested and available
-    if args.use_fp8 and FP8_AVAILABLE:
-        print("Using FP8 precision for training")
-        # Create FP8 recipe
-        fp8_recipe = recipe.DelayedScaling(
-            margin=0,
-            interval=1,
-            fp8_format=recipe.Format.E4M3,
-            amax_history_len=16,
-            amax_compute_algo="max",
-        )
-        
-        # Wrap model layers with FP8 modules
-        # Note: This is a simplified approach and may need to be adapted based on the specific model architecture
-        for name, module in model.named_modules():
-            if isinstance(module, torch.nn.Linear):
-                parent_name = '.'.join(name.split('.')[:-1])
-                layer_name = name.split('.')[-1]
-                parent = model
-                for part in parent_name.split('.'):
-                    if part:
-                        parent = getattr(parent, part)
-                
-                # Replace with FP8 linear layer
-                fp8_linear = te.Linear(
-                    module.in_features,
-                    module.out_features,
-                    bias=module.bias is not None,
-                    fp8=True,
-                    fp8_recipe=fp8_recipe,
-                )
-                
-                # Copy weights and biases
-                with torch.no_grad():
-                    fp8_linear.weight.copy_(module.weight)
-                    if module.bias is not None:
-                        fp8_linear.bias.copy_(module.bias)
-                
-                # Replace the original module
-                setattr(parent, layer_name, fp8_linear)
-        
-        print("Model converted to use FP8 precision")
-    
     model.to(device)
     
     # Load dataset
@@ -371,9 +514,13 @@ def main():
     parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Maximum gradient norm")
     parser.add_argument("--warmup_ratio", type=float, default=0.1, help="Warmup ratio")
     parser.add_argument("--use_bf16", action="store_true", help="Use bfloat16 precision")
-    parser.add_argument("--use_fp8", action="store_true", help="Use FP8 precision (requires transformer_engine)")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    
+    # Distributed training arguments
+    parser.add_argument("--distributed", action="store_true", help="Use distributed training")
+    parser.add_argument("--num_gpus", type=int, default=8, help="Number of GPUs to use (0 for all available)")
+    parser.add_argument("--master_port", type=str, default="12355", help="Port for distributed training")
     
     args = parser.parse_args()
     finetune(args)

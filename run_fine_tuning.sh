@@ -58,6 +58,7 @@ echo ""
 # Step 3: Fine-tune the model
 echo "Step 3: Fine-tuning the model..."
 echo "This step may take a long time depending on your hardware."
+echo "Using distributed training across 8 GPUs to avoid memory issues."
 python finetune_llada.py \
     --data sft_data/preprocessed/preprocessed_data.pt \
     --tokenizer sft_data/preprocessed/tokenizer \
@@ -68,7 +69,9 @@ python finetune_llada.py \
     --gradient_accumulation_steps $GRADIENT_ACCUMULATION_STEPS \
     --learning_rate $LEARNING_RATE \
     --warmup_ratio $WARMUP_RATIO \
-    --use_fp8
+    --use_bf16 \
+    --distributed \
+    --num_gpus 8
 
 if [ $? -ne 0 ]; then
     echo "Error fine-tuning model. Exiting."
