@@ -66,13 +66,6 @@ class SFTDataset(Dataset):
         logger.info(f"Sequence length stats: min={min(lengths)}, max={max(lengths)}, avg={sum(lengths)/len(lengths):.2f}")
         logger.info(f"Prompt length stats: min={min(prompt_lengths)}, max={max(prompt_lengths)}, avg={sum(prompt_lengths)/len(prompt_lengths):.2f}")
         
-        # Check if dataset has logits
-        self.has_logits = all("llama_logits" in item for item in self.data)
-        if self.has_logits:
-            logger.info("Dataset contains LLaMA logits for KL divergence training")
-        else:
-            logger.info("Dataset does not contain logits, will use standard cross-entropy training")
-        
     def __len__(self):
         return len(self.data)
     
@@ -90,36 +83,16 @@ def collate_fn(batch):
     input_ids = torch.full((len(batch), max_len), 126081, dtype=torch.long)  # EOS token for padding
     prompt_lengths = torch.zeros(len(batch), dtype=torch.long)
     
-    # Check if batch has logits
-    has_logits = "llama_logits" in batch[0]
-    
     # Fill tensors
     for i, item in enumerate(batch):
         seq_len = item["input_ids"].shape[0]
         input_ids[i, :seq_len] = item["input_ids"]
         prompt_lengths[i] = item["prompt_length"]
     
-    result = {
+    return {
         "input_ids": input_ids,
         "prompt_lengths": prompt_lengths
     }
-    
-    # Handle logits if present
-    if has_logits:
-        # Get vocab size from the first item
-        vocab_size = batch[0]["llama_logits"].shape[1]
-        
-        # Initialize logits tensor with zeros
-        llama_logits = torch.zeros((len(batch), max_len, vocab_size), dtype=torch.float32)
-        
-        # Fill logits tensor
-        for i, item in enumerate(batch):
-            seq_len = item["llama_logits"].shape[0]
-            llama_logits[i, :seq_len, :] = item["llama_logits"]
-        
-        result["llama_logits"] = llama_logits
-    
-    return result
 
 def forward_process(input_ids, eps=1e-3):
     """
@@ -160,33 +133,7 @@ def forward_process(input_ids, eps=1e-3):
     logger.debug(f"Forward process completed in {time.time() - start_time:.4f} seconds")
     return noisy_batch, masked_indices, p_mask
 
-def compute_kl_divergence_loss(llada_logits, llama_logits, temperature=1.0):
-    """
-    Compute KL divergence loss between LLaDA and LLaMA probability distributions.
-    
-    Args:
-        llada_logits: Logits from LLaDA model [batch_size, seq_length, vocab_size]
-        llama_logits: Logits from LLaMA model [batch_size, seq_length, vocab_size]
-        temperature: Temperature for softening the distributions
-        
-    Returns:
-        KL divergence loss
-    """
-    # Apply temperature softening
-    llada_probs = F.softmax(llada_logits / temperature, dim=-1)
-    llama_probs = F.softmax(llama_logits / temperature, dim=-1)
-    
-    # Compute KL divergence
-    # Note: F.kl_div expects log probabilities for the first argument
-    kl_loss = F.kl_div(
-        llada_probs.log(),
-        llama_probs,
-        reduction='none'
-    ).sum(-1)  # Sum over vocabulary dimension
-    
-    return kl_loss
-
-def train_epoch(model, dataloader, optimizer, scheduler, device, epoch, args):
+def train_epoch(model, dataloader, optimizer, scheduler, device, epoch):
     """Train for one epoch."""
     model.train()
     total_loss = 0
@@ -211,12 +158,6 @@ def train_epoch(model, dataloader, optimizer, scheduler, device, epoch, args):
             data_to_device_start = time.time()
             input_ids = batch["input_ids"].to(device)
             prompt_lengths = batch["prompt_lengths"].to(device)
-            
-            # Check if batch has logits for KL divergence
-            has_logits = "llama_logits" in batch
-            if has_logits:
-                llama_logits = batch["llama_logits"].to(device)
-            
             logger.debug(f"Data to device time: {time.time() - data_to_device_start:.4f}s")
             
             # Log batch statistics
@@ -243,12 +184,6 @@ def train_epoch(model, dataloader, optimizer, scheduler, device, epoch, args):
             
             masked_indices = (noisy_batch == 126336)
             
-            # Create response mask (True for response positions)
-            response_mask = ~prompt_mask.bool()
-            
-            # Create masked response indices (True for masked tokens in the response)
-            masked_response_indices = masked_indices & response_mask
-            
             # Log masking statistics
             mask_count = masked_indices.sum().item()
             mask_percentage = 100 * mask_count / (batch_size * seq_length)
@@ -271,79 +206,36 @@ def train_epoch(model, dataloader, optimizer, scheduler, device, epoch, args):
             
             # Calculate loss
             loss_start = time.time()
+            token_loss = F.cross_entropy(
+                logits[masked_indices].reshape(-1, logits.size(-1)), 
+                input_ids[masked_indices], 
+                reduction='none'
+            ) / p_mask[masked_indices]
             
-            # Determine loss type based on args and data
-            loss_type = args.loss_type
-            if loss_type == "auto":
-                loss_type = "kl" if has_logits else "ce"
-            
-            if loss_type == "ce" or loss_type == "hybrid":
-                # Standard cross-entropy loss
-                token_loss = F.cross_entropy(
-                    logits[masked_indices].reshape(-1, logits.size(-1)), 
-                    input_ids[masked_indices], 
-                    reduction='none'
-                ) / p_mask[masked_indices]
+            # Check for NaN or inf in token_loss
+            if torch.isnan(token_loss).any() or torch.isinf(token_loss).any():
+                logger.error(f"NaN or inf values detected in token_loss")
+                nan_count = torch.isnan(token_loss).sum().item()
+                inf_count = torch.isinf(token_loss).sum().item()
+                logger.error(f"NaN count: {nan_count}, Inf count: {inf_count}")
                 
-                # Check for NaN or inf in token_loss
-                if torch.isnan(token_loss).any() or torch.isinf(token_loss).any():
-                    logger.error(f"NaN or inf values detected in token_loss")
-                    nan_count = torch.isnan(token_loss).sum().item()
-                    inf_count = torch.isinf(token_loss).sum().item()
-                    logger.error(f"NaN count: {nan_count}, Inf count: {inf_count}")
-                    
-                    # Log p_mask statistics to help diagnose division by zero
-                    if torch.isnan(token_loss).any():
-                        min_p_mask = p_mask[masked_indices].min().item()
-                        logger.error(f"Minimum p_mask value: {min_p_mask}")
-                
-                ce_loss = torch.sum(token_loss / answer_lengths[masked_indices]) / input_ids.shape[0]
-                
-                # Check for NaN or inf in final loss
-                if torch.isnan(ce_loss).any() or torch.isinf(ce_loss).any():
-                    logger.error(f"NaN or inf values detected in final CE loss: {ce_loss.item()}")
+                # Log p_mask statistics to help diagnose division by zero
+                if torch.isnan(token_loss).any():
+                    min_p_mask = p_mask[masked_indices].min().item()
+                    logger.error(f"Minimum p_mask value: {min_p_mask}")
             
-            if loss_type == "kl" or loss_type == "hybrid":
-                if not has_logits:
-                    logger.error("KL divergence loss requested but no logits provided in the data")
-                    loss_type = "ce"  # Fall back to CE loss
-                else:
-                    # Extract LLaDA's logits for masked response positions
-                    llada_logits_masked = logits[masked_response_indices]
-                    
-                    # Extract corresponding LLaMA logits
-                    llama_logits_masked = llama_logits[masked_response_indices]
-                    
-                    # Compute KL divergence loss
-                    kl_loss_per_token = compute_kl_divergence_loss(
-                        llada_logits_masked, 
-                        llama_logits_masked, 
-                        temperature=args.temperature
-                    ) / p_mask[masked_response_indices]
-                    
-                    kl_loss = torch.sum(kl_loss_per_token / answer_lengths[masked_response_indices]) / input_ids.shape[0]
-                    
-                    # Check for NaN or inf in KL loss
-                    if torch.isnan(kl_loss).any() or torch.isinf(kl_loss).any():
-                        logger.error(f"NaN or inf values detected in KL loss: {kl_loss.item()}")
+            ce_loss = torch.sum(token_loss / answer_lengths[masked_indices]) / input_ids.shape[0]
             
-            # Combine losses if using hybrid approach
-            if loss_type == "hybrid":
-                loss = args.alpha * ce_loss + args.beta * kl_loss
-                logger.info(f"Hybrid loss: CE={ce_loss.item():.6f}, KL={kl_loss.item():.6f}, Combined={loss.item():.6f}")
-            elif loss_type == "kl":
-                loss = kl_loss
-                logger.info(f"KL loss: {loss.item():.6f}")
-            else:  # ce
-                loss = ce_loss
-                logger.info(f"CE loss: {loss.item():.6f}")
+            # Check for NaN or inf in final loss
+            if torch.isnan(ce_loss).any() or torch.isinf(ce_loss).any():
+                logger.error(f"NaN or inf values detected in final loss: {ce_loss.item()}")
             
             logger.debug(f"Loss calculation time: {time.time() - loss_start:.4f}s")
             
             # Backward pass
             backward_start = time.time()
             optimizer.zero_grad()
-            loss.backward()
+            ce_loss.backward()
             
             # Check for exploding/vanishing gradients
             grad_norm = 0.0
@@ -381,7 +273,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, device, epoch, args):
                 logger.info(f"Memory usage: {memory_allocated:.2f}GB allocated, {memory_reserved:.2f}GB reserved")
             
             # Update metrics
-            loss_value = loss.item()
+            loss_value = ce_loss.item()
             total_loss += loss_value
             
             # Log batch completion
@@ -487,16 +379,6 @@ def main():
                         help="Number of updates steps to accumulate before performing a backward/update pass")
     parser.add_argument("--max_grad_norm", type=float, default=1.0,
                         help="Max gradient norm for gradient clipping")
-    # New arguments for KL divergence training
-    parser.add_argument("--loss_type", type=str, default="auto",
-                        choices=["auto", "ce", "kl", "hybrid"],
-                        help="Loss type: auto (detect from data), ce (cross-entropy), kl (KL divergence), or hybrid")
-    parser.add_argument("--temperature", type=float, default=1.0,
-                        help="Temperature for softening probability distributions in KL divergence")
-    parser.add_argument("--alpha", type=float, default=0.5,
-                        help="Weight for cross-entropy loss in hybrid loss")
-    parser.add_argument("--beta", type=float, default=0.5,
-                        help="Weight for KL divergence loss in hybrid loss")
     
     args = parser.parse_args()
     
@@ -608,7 +490,7 @@ def main():
             logger.info(f"Starting epoch {epoch + 1}/{args.epochs}")
             
             # Train for one epoch
-            avg_loss = train_epoch(model, dataloader, optimizer, scheduler, device, epoch + 1, args)
+            avg_loss = train_epoch(model, dataloader, optimizer, scheduler, device, epoch + 1)
             
             epoch_time = time.time() - epoch_start
             logger.info(f"Epoch {epoch + 1} completed in {epoch_time:.2f} seconds")

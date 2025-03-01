@@ -1,0 +1,105 @@
+[
+  {
+    "prompt": "<BOS><start_id>user<end_id>\nWhat is the capital of France?<eot_id><start_id>assistant<end_id>\n",
+    "response": "Paris.<EOS>",
+    "logits": [
+      {
+        "position": 0,
+        "chosen_token": "Paris",
+        "chosen_token_id": 4874,
+        "top_5": [
+          {"token": "Paris", "token_id": 4874, "logit": 14.5000},
+          {"token": "France", "token_id": 2763, "logit": 12.7500},
+          {"token": "Yes", "token_id": 4378, "logit": 11.2500},
+          {"token": "The", "token_id": 791, "logit": 10.8750},
+          {"token": "It", "token_id": 1123, "logit": 9.6250}
+        ],
+        "full_logits": [0.1, 14.5, 2.3, 0.5, 1.2, 3.4, 0.7, 0.9, 1.5, 2.1]
+      },
+      {
+        "position": 1,
+        "chosen_token": ".",
+        "chosen_token_id": 29889,
+        "top_5": [
+          {"token": ".", "token_id": 29889, "logit": 15.4375},
+          {"token": ",", "token_id": 29892, "logit": 13.8750},
+          {"token": "!", "token_id": 29991, "logit": 12.5000},
+          {"token": ";", "token_id": 29913, "logit": 11.7500},
+          {"token": "?", "token_id": 29973, "logit": 10.9375}
+        ],
+        "full_logits": [1.2, 15.4, 3.1, 0.8, 1.5, 2.7, 0.4, 0.6, 1.9, 2.3]
+      },
+      {
+        "position": 2,
+        "chosen_token": "<EOS>",
+        "chosen_token_id": 126336,
+        "top_5": [
+          {"token": "<EOS>", "token_id": 126336, "logit": 13.6875},
+          {"token": "now", "token_id": 1450, "logit": 11.5000},
+          {"token": "and", "token_id": 322, "logit": 10.8750},
+          {"token": "in", "token_id": 304, "logit": 10.1250},
+          {"token": "to", "token_id": 311, "logit": 9.7500}
+        ],
+        "full_logits": [0.5, 13.7, 4.0, 0.9, 1.7, 2.2, 0.3, 0.8, 1.4, 2.6]
+      }
+    ]
+  },
+  {
+    "prompt": "<BOS><start_id>user<end_id>\nExplain quantum computing in simple terms.<eot_id><start_id>assistant<end_id>\n",
+    "response": "Quantum computing.<EOS>",
+    "logits": [
+      {
+        "position": 0,
+        "chosen_token": "Quantum",
+        "chosen_token_id": 5678,
+        "top_5": [
+          {"token": "Quantum", "token_id": 5678, "logit": 16.2500},
+          {"token": "In", "token_id": 1234, "logit": 14.7500},
+          {"token": "Simply", "token_id": 3456, "logit": 13.5000},
+          {"token": "Think", "token_id": 7890, "logit": 12.2500},
+          {"token": "Imagine", "token_id": 9012, "logit": 11.8750}
+        ],
+        "full_logits": [0.3, 16.2, 2.5, 0.7, 1.4, 3.6, 0.9, 1.1, 1.7, 2.3]
+      },
+      {
+        "position": 1,
+        "chosen_token": " computing",
+        "chosen_token_id": 3456,
+        "top_5": [
+          {"token": " computing", "token_id": 3456, "logit": 15.7500},
+          {"token": " mechanics", "token_id": 7890, "logit": 14.2500},
+          {"token": " physics", "token_id": 1234, "logit": 13.5000},
+          {"token": " theory", "token_id": 5678, "logit": 12.8750},
+          {"token": " computers", "token_id": 9012, "logit": 11.6250}
+        ],
+        "full_logits": [0.4, 15.7, 2.7, 0.6, 1.3, 3.5, 0.8, 1.0, 1.6, 2.2]
+      },
+      {
+        "position": 2,
+        "chosen_token": ".",
+        "chosen_token_id": 29889,
+        "top_5": [
+          {"token": ".", "token_id": 29889, "logit": 15.4375},
+          {"token": ",", "token_id": 29892, "logit": 13.8750},
+          {"token": "!", "token_id": 29991, "logit": 12.5000},
+          {"token": ";", "token_id": 29913, "logit": 11.7500},
+          {"token": "?", "token_id": 29973, "logit": 10.9375}
+        ],
+        "full_logits": [1.2, 15.4, 3.1, 0.8, 1.5, 2.7, 0.4, 0.6, 1.9, 2.3]
+      },
+      {
+        "position": 3,
+        "chosen_token": "<EOS>",
+        "chosen_token_id": 126336,
+        "top_5": [
+          {"token": "<EOS>", "token_id": 126336, "logit": 13.6875},
+          {"token": "now", "token_id": 1450, "logit": 11.5000},
+          {"token": "and", "token_id": 322, "logit": 10.8750},
+          {"token": "in", "token_id": 304, "logit": 10.1250},
+          {"token": "to", "token_id": 311, "logit": 9.7500}
+        ],
+        "full_logits": [0.5, 13.7, 4.0, 0.9, 1.7, 2.2, 0.3, 0.8, 1.4, 2.6]
+      }
+    ]
+  }
+]
